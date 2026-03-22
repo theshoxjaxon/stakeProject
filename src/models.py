@@ -142,6 +142,8 @@ class Prediction(Base):
     
     # Results tracking
     actual_outcome: Mapped[str | None] = mapped_column(String(10), nullable=True)  # 'home', 'draw', 'away'
+    was_win: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    profit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     result_settled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     settled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     

@@ -4,16 +4,29 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Iterable
 
 import numpy as np
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from src.database import Match, ensure_team_ratings
+from src.models import Match, TeamRating
 
 MATRIX_SIZE = 6  # we model 0–5 goals
 LEAGUE_AVG_GOALS_PER_MATCH = 2.7  # rough global prior
+
+
+def ensure_team_ratings(session: Session, team_names: Iterable[str]):
+    # This assumes TeamRating is defined in src.models
+    cleaned = {t for t in team_names if t}
+    if not cleaned:
+        return
+    existing = {name for (name,) in session.query(
+        TeamRating.team_name).filter(TeamRating.team_name.in_(cleaned)).all()}
+    for name in cleaned - existing:
+        session.add(TeamRating(team_name=name))
+    session.commit()
+
 
 
 def _poisson_p(k: int, lam: float) -> float:

@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from src.database import Base
+from src.models import Base
 from src.match_queries import matches_for_prediction, utc_now
 from src.models import Match
 

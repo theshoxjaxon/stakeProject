@@ -16,7 +16,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.config import DEFAULT_SPORTS, ODDS_API_BASE_URL, ODDS_API_KEY, SCORES_DAYS_FROM
-from src.database import Match, TeamRating, get_engine, init_db
+from src.database import get_engine, init_db
+from src.models import Match, TeamRating
 from src.elo import EloEngine
 
 

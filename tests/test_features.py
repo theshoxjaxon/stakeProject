@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from src.database import Base
+from src.models import Base
 from src.feature_engineering import compute_h2h, compute_team_form, days_since_last_match
 from src.models import Match
 

@@ -13,7 +13,8 @@ from src.config import (
     DEFAULT_SPORTS,
     SCORES_DAYS_FROM,
 )
-from src.database import Match, Odds, Team, get_engine, init_db
+from src.database import get_engine, init_db
+from src.models import Match, Odds, Team
 
 
 def _american_to_decimal(american_odds: float) -> float:

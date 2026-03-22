@@ -160,13 +160,16 @@ def run_pipeline() -> None:
             }
 
             ai_advice_str = get_ai_betting_advice(match_data, matrix)
-            logger.info(f"🤖 AI Advisor Raw Response: {ai_advice_str}") # Print raw response
-            
+            # Print raw response
+            logger.info(f"🤖 AI Advisor Raw Response: {ai_advice_str}")
+
             try:
                 ai_advice = json.loads(ai_advice_str)
             except (json.JSONDecodeError, TypeError):
-                logger.warning(f"🤖 AI Advisor did not return valid JSON: {ai_advice_str}")
-                ai_advice = {"final_command": "Error", "reasoning": "Invalid JSON from AI", "recommended_side": None}
+                logger.warning(
+                    f"🤖 AI Advisor did not return valid JSON: {ai_advice_str}")
+                ai_advice = {"final_command": "Error",
+                             "reasoning": "Invalid JSON from AI", "recommended_side": None}
 
             final_command = ai_advice.get('final_command', 'Unknown')
             ai_reasoning = ai_advice.get('reasoning', '')
@@ -204,7 +207,7 @@ def run_pipeline() -> None:
 
             # Display logic remains
             if SHOW_ONLY_VALUE_BETS:
-                if recommended_side: # If AI recommended a side
+                if recommended_side:  # If AI recommended a side
                     for side, model_p, mkt_odds, fair in [
                         ("H", p_h, h_odds, fair_odds[0]),
                         ("D", p_d, d_odds, fair_odds[1]),
@@ -212,7 +215,7 @@ def run_pipeline() -> None:
                     ]:
                         if side != recommended_side:
                             continue
-                        
+
                         if fair <= 0 or mkt_odds <= 0:
                             continue
                         implied_fair = 1.0 / fair
@@ -278,14 +281,13 @@ def run_pipeline() -> None:
                         note = "AI Pick"
                     elif edge > EDGE_THRESHOLD:
                         note = "value"
-                    
+
                     stake_pct = stake * 100 if edge > EDGE_THRESHOLD else 0.0
                     logger.info(
                         "%-4s %6.2f %6.1f %+7.1f %6.1f %8s",
                         side, mkt_odds, implied_fair * 100, edge * 100, stake_pct, note,
                     )
                 shown += 1
-
 
         if skipped_no_odds:
             logger.info(

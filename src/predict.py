@@ -7,7 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.config import DATABASE_PATH, EDGE_THRESHOLD
-from src.database import Odds, get_engine, init_db
+from src.database import get_engine, init_db
+from src.models import Odds
 from src.elo_model import LEAGUE_AVG_GOALS, elo_to_xg, get_elo_ratings
 from src.logger import get_logger
 from src.match_queries import matches_for_prediction

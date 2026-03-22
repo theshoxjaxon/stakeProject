@@ -3,7 +3,7 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from src.database import Team
+from src.models import Team
 
 HOME_ADVANTAGE = 50
 K_FACTOR = 20

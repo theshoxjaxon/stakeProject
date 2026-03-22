@@ -4,7 +4,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.config import DATABASE_PATH
-from src.database import Match, Team, get_engine, init_db
+from src.database import get_engine, init_db
+from src.models import Match, Team
 from src.elo_model import init_ratings, update_ratings
 
 
