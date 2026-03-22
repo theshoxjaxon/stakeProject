@@ -10,7 +10,6 @@ prime the database with recent results before running Elo updates.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Iterable
 
 import requests
 from sqlalchemy import select
@@ -21,7 +20,9 @@ from src.database import Match, TeamRating, get_engine, init_db
 from src.elo import EloEngine
 
 
-def _fetch_scores_for_sport(sport_key: str, days_from: int = SCORES_DAYS_FROM) -> list[dict]:
+def _fetch_scores_for_sport(
+    sport_key: str, days_from: int = SCORES_DAYS_FROM
+) -> list[dict]:
     """Fetch recent scores for a sport from The Odds API scores endpoint."""
     if not ODDS_API_KEY:
         raise ValueError("ODDS_API_KEY is not set in the environment/.env.")
@@ -116,9 +117,7 @@ def _rebuild_elo_from_matches(session: Session) -> None:
     # Persist final Elo ratings into team_ratings table
     for team_name, rating in engine.ratings.items():
         tr = (
-            session.execute(
-                select(TeamRating).where(TeamRating.team_name == team_name)
-            )
+            session.execute(select(TeamRating).where(TeamRating.team_name == team_name))
             .scalars()
             .first()
         )
@@ -153,4 +152,3 @@ def run_backfill() -> int:
         session.commit()
 
     return updated
-

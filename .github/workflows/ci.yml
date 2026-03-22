@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev, test]
+  pull_request:
+    branches: [main, dev, test]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Apply Alembic migrations (fresh SQLite)
+        env:
+          DATABASE_URL: sqlite:////tmp/ci_betting.db
+        run: |
+          mkdir -p /tmp
+          python -m alembic upgrade head
+
+      - name: Lint (black + flake8)
+        run: |
+          black --check src tests main.py
+          flake8 src tests main.py --max-line-length=100 --extend-ignore=E203,W503,E501 --jobs=1
+
+      - name: Run tests
+        run: python -m pytest

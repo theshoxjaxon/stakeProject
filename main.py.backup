@@ -15,6 +15,7 @@ from src.logger import get_logger
 from src.match_queries import matches_for_prediction
 from src.poisson_model import GoalEngine
 from src.value_detector import ValueQuant
+
 logger = get_logger(__name__)
 
 

@@ -1,4 +1,4 @@
-"""Poisson-based goal model (GoalEngine)."""
+"""Poisson-based goal model (GoalEngine) with optional home/away strength split and feature multipliers."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def _poisson_p(k: int, lam: float) -> float:
     """Return Poisson P(X = k) with mean lam."""
     if lam <= 0.0 or k < 0:
         return 0.0
-    return (lam ** k) * math.exp(-lam) / math.factorial(k)
+    return (lam**k) * math.exp(-lam) / math.factorial(k)
 
 
 @dataclass
@@ -29,12 +29,17 @@ class GoalEngine:
 
     attack_strength: Dict[str, float] = field(default_factory=dict)
     defense_strength: Dict[str, float] = field(default_factory=dict)
+    attack_home: Dict[str, float] = field(default_factory=dict)
+    attack_away: Dict[str, float] = field(default_factory=dict)
+    defense_home: Dict[str, float] = field(default_factory=dict)
+    defense_away: Dict[str, float] = field(default_factory=dict)
 
     def fit_from_matches(self, session: Session, min_matches: int = 5) -> None:
         """
         Estimate attack/defense strengths from completed matches in the DB.
 
-        Teams with fewer than ``min_matches`` fall back to neutral strength (1.0).
+        Teams with fewer than ``min_matches`` total appearances fall back to neutral (1.0).
+        When enough home/away games exist per team, separate home vs away strengths are used.
         """
         stmt = select(Match).where(
             Match.status.in_(["completed", "finished"]),
@@ -45,42 +50,97 @@ class GoalEngine:
         if not matches:
             return
 
-        team_stats: Dict[str, Dict[str, float]] = {}
+        # Aggregate goals for league averages
         total_goals = 0.0
-        total_matches = 0.0
+        total_home_goals = 0.0
+        total_away_goals = 0.0
+        n_m = float(len(matches))
+
+        # Per team: goals for/conceded when home vs away
+        ph: Dict[str, Dict[str, float]] = {}
+        pa: Dict[str, Dict[str, float]] = {}
 
         for m in matches:
             hs = float(m.home_score)
             as_ = float(m.away_score)
             total_goals += hs + as_
-            total_matches += 1.0
+            total_home_goals += hs
+            total_away_goals += as_
 
-            for team, gf, ga in ((m.home_team, hs, as_), (m.away_team, as_, hs)):
-                entry = team_stats.setdefault(team, {"gf": 0.0, "ga": 0.0, "n": 0.0})
-                entry["gf"] += gf
-                entry["ga"] += ga
-                entry["n"] += 1.0
+            h, a = m.home_team, m.away_team
+            ph.setdefault(h, {"gf": 0.0, "ga": 0.0, "n": 0.0})
+            ph[h]["gf"] += hs
+            ph[h]["ga"] += as_
+            ph[h]["n"] += 1.0
+            pa.setdefault(a, {"gf": 0.0, "ga": 0.0, "n": 0.0})
+            pa[a]["gf"] += as_
+            pa[a]["ga"] += hs
+            pa[a]["n"] += 1.0
 
-        league_avg_goals_per_team = (total_goals / max(total_matches, 1.0)) / 2.0
+        league_avg_goals_per_team = (total_goals / max(n_m, 1.0)) / 2.0
+        avg_home = total_home_goals / max(n_m, 1.0)
+        avg_away = total_away_goals / max(n_m, 1.0)
 
-        for team, st in team_stats.items():
-            n = st["n"]
-            if n < min_matches:
+        all_teams = set(ph.keys()) | set(pa.keys())
+
+        for team in all_teams:
+            st_all = ph.get(team, {"gf": 0.0, "ga": 0.0, "n": 0.0})
+            sa_all = pa.get(team, {"gf": 0.0, "ga": 0.0, "n": 0.0})
+            n_total = st_all["n"] + sa_all["n"]
+            if n_total < min_matches:
                 self.attack_strength[team] = 1.0
                 self.defense_strength[team] = 1.0
+                self.attack_home[team] = 1.0
+                self.attack_away[team] = 1.0
+                self.defense_home[team] = 1.0
+                self.defense_away[team] = 1.0
                 continue
 
-            avg_for = st["gf"] / n
-            avg_against = st["ga"] / n
-            self.attack_strength[team] = avg_for / league_avg_goals_per_team
-            self.defense_strength[team] = avg_against / league_avg_goals_per_team
+            # Blended (legacy) strengths
+            gf_t = st_all["gf"] + sa_all["gf"]
+            ga_t = st_all["ga"] + sa_all["ga"]
+            self.attack_strength[team] = (
+                gf_t / max(n_total, 1.0)
+            ) / league_avg_goals_per_team
+            self.defense_strength[team] = (
+                ga_t / max(n_total, 1.0)
+            ) / league_avg_goals_per_team
 
-        ensure_team_ratings(session, team_stats.keys())
+            # Home split
+            sh = ph.get(team, {"gf": 0.0, "ga": 0.0, "n": 0.0})
+            nh = sh["n"]
+            if nh >= max(2, min_matches // 2):
+                self.attack_home[team] = (sh["gf"] / nh) / max(avg_home, 1e-6)
+                self.defense_home[team] = (sh["ga"] / nh) / max(avg_home, 1e-6)
+            else:
+                self.attack_home[team] = self.attack_strength[team]
+                self.defense_home[team] = self.defense_strength[team]
+
+            # Away split
+            sa = pa.get(team, {"gf": 0.0, "ga": 0.0, "n": 0.0})
+            na = sa["n"]
+            if na >= max(2, min_matches // 2):
+                self.attack_away[team] = (sa["gf"] / na) / max(avg_away, 1e-6)
+                self.defense_away[team] = (sa["ga"] / na) / max(avg_away, 1e-6)
+            else:
+                self.attack_away[team] = self.attack_strength[team]
+                self.defense_away[team] = self.defense_strength[team]
+
+        ensure_team_ratings(session, all_teams)
 
     def _lambda_for_team(self, team: str, opponent: str, is_home: bool) -> float:
         """Return expected goals (lambda) for a team vs an opponent."""
-        att = self.attack_strength.get(team, 1.0)
-        opp_def = self.defense_strength.get(opponent, 1.0)
+        if is_home:
+            att = self.attack_home.get(team, self.attack_strength.get(team, 1.0))
+            opp_def = self.defense_away.get(
+                opponent, self.defense_strength.get(opponent, 1.0)
+            )
+        else:
+            att = self.attack_away.get(team, self.attack_strength.get(team, 1.0))
+            opp_def = self.defense_home.get(
+                opponent, self.defense_strength.get(opponent, 1.0)
+            )
+
         base = (LEAGUE_AVG_GOALS_PER_MATCH / 2.0) * att * (1.0 / max(opp_def, 1e-6))
         if is_home:
             base *= 1.05  # mild home boost
@@ -133,19 +193,36 @@ class GoalEngine:
         self,
         home_team: str,
         away_team: str,
+        session: Session | None = None,
+        kickoff: object | None = None,
+        use_features: bool = True,
     ) -> Tuple[np.ndarray, float, float, float, float, float]:
         """
         Predict score distribution and summary probabilities for a match.
 
-        Returns
-        -------
-        (matrix, p_home, p_draw, p_away, p_over_2_5, p_btts)
+        When ``session`` and ``kickoff`` are provided and ``FEATURES_ENABLED`` is true,
+        applies form / H2H / rest multipliers from ``feature_engineering``.
         """
         lam_home = self._lambda_for_team(home_team, away_team, is_home=True)
         lam_away = self._lambda_for_team(away_team, home_team, is_home=False)
+
+        if use_features and session is not None and kickoff is not None:
+            from datetime import datetime
+
+            from src.config import FEATURES_ENABLED, FORM_WINDOW
+
+            if FEATURES_ENABLED:
+                from src.feature_engineering import compute_lambda_multipliers
+
+                if isinstance(kickoff, datetime):
+                    mult = compute_lambda_multipliers(
+                        session, home_team, away_team, kickoff, FORM_WINDOW
+                    )
+                    lam_home *= mult.home
+                    lam_away *= mult.away
+
         m = self._build_matrix(lam_home, lam_away)
         p_home, p_draw, p_away = self._hda_from_matrix(m)
         p_over, _ = self._over_under_25(m)
         p_btts = self._btts(m)
         return m, p_home, p_draw, p_away, p_over, p_btts
-

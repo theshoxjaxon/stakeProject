@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String
+from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Boolean
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -16,7 +16,9 @@ class Team(Base):
     __tablename__ = "teams"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(
+        String(255), unique=True, nullable=False, index=True
+    )
     current_elo: Mapped[float] = mapped_column(Float, default=1500.0, nullable=False)
 
 
@@ -31,10 +33,19 @@ class Match(Base):
     away_team: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     home_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     away_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    status: Mapped[str] = mapped_column(String(50), default="scheduled", nullable=False, index=True)
+    status: Mapped[str] = mapped_column(
+        String(50), default="scheduled", nullable=False, index=True
+    )
 
     odds: Mapped[list["Odds"]] = relationship(
         "Odds",
+        back_populates="match",
+        cascade="all, delete-orphan",
+    )
+    
+    # Add relationship to predictions
+    predictions: Mapped[list["Prediction"]] = relationship(
+        "Prediction",
         back_populates="match",
         cascade="all, delete-orphan",
     )
@@ -60,7 +71,9 @@ class Odds(Base):
     h_odds: Mapped[float] = mapped_column(Float, nullable=False)
     d_odds: Mapped[float] = mapped_column(Float, nullable=False)
     a_odds: Mapped[float] = mapped_column(Float, nullable=False)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False, index=True
+    )
 
     match: Mapped["Match"] = relationship("Match", back_populates="odds")
 
@@ -75,7 +88,104 @@ class TeamRating(Base):
     __tablename__ = "team_ratings"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    team_name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    team_name: Mapped[str] = mapped_column(
+        String(255), unique=True, nullable=False, index=True
+    )
     elo_rating: Mapped[float] = mapped_column(Float, nullable=False, default=1500.0)
     attack_strength: Mapped[float | None] = mapped_column(Float, nullable=True)
     defense_strength: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+# ============= NEW TABLES FOR PREDICTION TRACKING =============
+
+class Prediction(Base):
+    """Store model predictions for future tracking."""
+    
+    __tablename__ = "predictions"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    match_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("matches.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False, index=True
+    )
+    
+    # Model probabilities (0-1)
+    home_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    draw_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    away_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    
+    # Market odds (from the odds table, stored here for snapshot)
+    market_home: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_draw: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_away: Mapped[float | None] = mapped_column(Float, nullable=True)
+    
+    # Fair odds (1 / probability)
+    fair_home: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fair_draw: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fair_away: Mapped[float | None] = mapped_column(Float, nullable=True)
+    
+    # Edges (percentage)
+    edge_home: Mapped[float | None] = mapped_column(Float, nullable=True)
+    edge_draw: Mapped[float | None] = mapped_column(Float, nullable=True)
+    edge_away: Mapped[float | None] = mapped_column(Float, nullable=True)
+    
+    # Bet recommendation
+    recommended_selection: Mapped[str | None] = mapped_column(String(10), nullable=True)  # 'home', 'draw', 'away'
+    recommended_stake_percent: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)  # % of bankroll
+    recommended_stake_amount: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)  # actual currency
+    edge_used: Mapped[float | None] = mapped_column(Float, nullable=True)  # edge that triggered bet
+    
+    # Results tracking
+    actual_outcome: Mapped[str | None] = mapped_column(String(10), nullable=True)  # 'home', 'draw', 'away'
+    result_settled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    
+    # Relationships
+    match: Mapped["Match"] = relationship("Match", back_populates="predictions")
+    bet: Mapped["Bet | None"] = relationship("Bet", back_populates="prediction", uselist=False, cascade="all, delete-orphan")
+    
+    __table_args__ = (
+        Index("ix_predictions_match_created", "match_id", "created_at"),
+        Index("ix_predictions_result_settled", "result_settled"),
+    )
+
+
+class Bet(Base):
+    """Store actual bets placed (for tracking profit/loss)."""
+    
+    __tablename__ = "bets"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    prediction_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("predictions.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,  # One bet per prediction
+        index=True,
+    )
+    placed_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False, index=True
+    )
+    
+    # Bet details
+    selection: Mapped[str] = mapped_column(String(10), nullable=False)  # 'home', 'draw', 'away'
+    odds: Mapped[float] = mapped_column(Float, nullable=False)
+    stake_amount: Mapped[float] = mapped_column(Float, nullable=False)  # actual currency
+    stake_percent: Mapped[float] = mapped_column(Float, nullable=False)  # % of bankroll
+    
+    # Settlement
+    status: Mapped[str] = mapped_column(String(20), default='pending', nullable=False, index=True)  # 'pending', 'won', 'lost', 'void'
+    profit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    
+    # Relationships
+    prediction: Mapped["Prediction"] = relationship("Prediction", back_populates="bet")
+    
+    __table_args__ = (
+        Index("ix_bets_status_settled", "status", "settled_at"),
+    )

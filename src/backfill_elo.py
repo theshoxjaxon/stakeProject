@@ -24,7 +24,9 @@ def ensure_teams_from_matches(session: Session, matches: list[Match]) -> None:
         team_names.add(m.home_team)
         team_names.add(m.away_team)
     for name in team_names:
-        existing = session.execute(select(Team).where(Team.name == name)).scalar_one_or_none()
+        existing = session.execute(
+            select(Team).where(Team.name == name)
+        ).scalar_one_or_none()
         if existing is None:
             session.add(Team(name=name, current_elo=1500.0))
 

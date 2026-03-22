@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import numpy as np
 
-BTTS_VALUE_THRESHOLD = 0.05  # Value if model BTTS % is 5% higher than implied
-KELLY_FRACTION = 0.25  # Fractional Kelly multiplier for safety
+from src.config import BTTS_VALUE_THRESHOLD, KELLY_FRACTION
+from src.logger import get_logger
+
+logger = get_logger(__name__)
 
 
-def kelly_stake(edge: float, odds: float) -> float:
+def kelly_stake(
+    edge: float, odds: float, kelly_fraction: float = KELLY_FRACTION
+) -> float:
     """
     Recommend fraction of bankroll to bet using Fractional Kelly (0.25 multiplier).
     edge = our_prob - implied_prob; odds = decimal odds.
@@ -23,7 +27,7 @@ def kelly_stake(edge: float, odds: float) -> float:
     if b <= 0:
         return 0.0
     f_full = (b * p - q) / b
-    f_frac = KELLY_FRACTION * f_full
+    f_frac = kelly_fraction * f_full
     return max(0.0, min(1.0, f_frac))
 
 
@@ -79,26 +83,27 @@ def run_reports(
     btts_odds_by_match_id: dict[str, float] | None = None,
 ) -> None:
     """
-    Print refined reports for all upcoming matches.
+    Print refined reports for matches with kickoff in the future (same filter as predictions).
+
     btts_odds_by_match_id: optional map of match_id -> BTTS decimal odds for value check.
     """
     from src.config import DATABASE_PATH
-    from src.database import Match, get_engine, init_db
-    from src.predict import get_latest_odds, get_model_probabilities
+    from src.database import get_engine, init_db
+    from src.predict import get_model_probabilities
 
     init_db(DATABASE_PATH)
     engine = get_engine(DATABASE_PATH)
     btts_odds_by_match_id = btts_odds_by_match_id or {}
 
-    from sqlalchemy import select
     from sqlalchemy.orm import Session
 
+    from src.match_queries import matches_for_prediction
+
     with Session(engine) as session:
-        stmt = select(Match).where(Match.status.in_(["upcoming", "scheduled"]))
-        matches = list(session.execute(stmt).scalars().all())
+        matches = list(session.execute(matches_for_prediction()).scalars().all())
 
         if not matches:
-            print("No upcoming matches.")
+            logger.info("No upcoming matches.")
             return
 
         for match in matches:
@@ -108,8 +113,12 @@ def run_reports(
             if matrix is None:
                 continue
             btts_odds = btts_odds_by_match_id.get(match.id)
-            print(format_match_report(match.home_team, match.away_team, matrix, btts_odds))
-            print()
+            logger.info(
+                "%s\n",
+                format_match_report(
+                    match.home_team, match.away_team, matrix, btts_odds
+                ),
+            )
 
 
 if __name__ == "__main__":

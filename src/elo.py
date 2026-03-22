@@ -100,4 +100,3 @@ class EloEngine:
         self.ratings[away_team] = r_away_new
 
         return r_home_new, r_away_new
-

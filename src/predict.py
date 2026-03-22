@@ -6,11 +6,13 @@ import numpy as np
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from src.config import DATABASE_PATH
-from src.database import Match, Odds, get_engine, init_db
+from src.config import DATABASE_PATH, EDGE_THRESHOLD
+from src.database import Odds, get_engine, init_db
 from src.elo_model import LEAGUE_AVG_GOALS, elo_to_xg, get_elo_ratings
+from src.logger import get_logger
+from src.match_queries import matches_for_prediction
 
-EDGE_THRESHOLD = 0.05
+logger = get_logger(__name__)
 HIGH_PROB_DRAW_THRESHOLD = 0.25  # 0-0 + 1-1 combined > 25%
 MATRIX_SIZE = 6  # 0-5 goals per team
 
@@ -22,10 +24,12 @@ def poisson_probability(actual: int, lambda_val: float) -> float:
     """
     if lambda_val <= 0 or actual < 0:
         return 0.0
-    return (lambda_val ** actual) * math.exp(-lambda_val) / math.factorial(actual)
+    return (lambda_val**actual) * math.exp(-lambda_val) / math.factorial(actual)
 
 
-def calculate_match_probs(home_expected_goals: float, away_expected_goals: float) -> np.ndarray:
+def calculate_match_probs(
+    home_expected_goals: float, away_expected_goals: float
+) -> np.ndarray:
     """
     Build a 6x6 matrix of score probabilities (0-5 goals per team).
     P(i,j) = P(home=i) * P(away=j) via independent Poisson.
@@ -33,9 +37,9 @@ def calculate_match_probs(home_expected_goals: float, away_expected_goals: float
     matrix = np.zeros((MATRIX_SIZE, MATRIX_SIZE))
     for i in range(MATRIX_SIZE):
         for j in range(MATRIX_SIZE):
-            matrix[i, j] = poisson_probability(i, home_expected_goals) * poisson_probability(
-                j, away_expected_goals
-            )
+            matrix[i, j] = poisson_probability(
+                i, home_expected_goals
+            ) * poisson_probability(j, away_expected_goals)
     return matrix
 
 
@@ -83,7 +87,7 @@ def probabilities_from_matrix(matrix: np.ndarray) -> tuple[float, float, float]:
     """
     p_draw = np.trace(matrix)
     p_home = np.sum(np.tril(matrix, -1))  # below diagonal
-    p_away = np.sum(np.triu(matrix, 1))   # above diagonal
+    p_away = np.sum(np.triu(matrix, 1))  # above diagonal
     total = p_home + p_draw + p_away
     if total > 0:
         p_home /= total
@@ -115,9 +119,7 @@ def get_model_probabilities(
     return (p_h, p_d, p_a, matrix)
 
 
-def kelly_dnb_stake(
-    p_win: float, p_draw: float, decimal_odds: float
-) -> float:
+def kelly_dnb_stake(p_win: float, p_draw: float, decimal_odds: float) -> float:
     """
     Kelly criterion for Draw No Bet (DNB) scenario.
     DNB: win if your side wins, stake returned if draw, lose if opponent wins.
@@ -140,7 +142,9 @@ def implied_probability(odds: float) -> float:
     return 1.0 / odds if odds > 0 else 0.0
 
 
-def get_latest_odds(session: Session, match_id: str) -> tuple[float, float, float] | None:
+def get_latest_odds(
+    session: Session, match_id: str
+) -> tuple[float, float, float] | None:
     """Get the latest h_odds, d_odds, a_odds for a match (by max timestamp)."""
     stmt = (
         select(Odds.h_odds, Odds.d_odds, Odds.a_odds)
@@ -152,20 +156,22 @@ def get_latest_odds(session: Session, match_id: str) -> tuple[float, float, floa
     return (row.h_odds, row.d_odds, row.a_odds) if row else None
 
 
-def run_value_detection(edge_threshold: float = EDGE_THRESHOLD) -> None:
+def run_value_detection(edge_threshold: float | None = None) -> None:
     """
-    Load upcoming matches, compute implied vs model probability,
-    print VALUE BETs, High-Probability Draws, and Kelly staking.
+    Load matches whose kickoff is strictly in the future (UTC), compute implied vs model
+    probability, print VALUE BETs, High-Probability Draws, and Kelly staking.
     """
+    if edge_threshold is None:
+        edge_threshold = EDGE_THRESHOLD
     init_db(DATABASE_PATH)
     engine = get_engine(DATABASE_PATH)
 
     with Session(engine) as session:
-        stmt = select(Match).where(Match.status.in_(["upcoming", "scheduled"]))
-        matches = list(session.execute(stmt).scalars().all())
+        # Kickoff in the future (UTC); optional horizon from PREDICTION_HORIZON_DAYS
+        matches = list(session.execute(matches_for_prediction()).scalars().all())
 
         if not matches:
-            print("No upcoming matches found.")
+            logger.info("No upcoming matches found.")
             return
 
         for match in matches:
@@ -188,31 +194,31 @@ def run_value_detection(edge_threshold: float = EDGE_THRESHOLD) -> None:
             edge_a = model_a - impl_a
 
             has_value = (
-                edge_h > edge_threshold or
-                edge_d > edge_threshold or
-                edge_a > edge_threshold
+                edge_h > edge_threshold
+                or edge_d > edge_threshold
+                or edge_a > edge_threshold
             )
 
             if has_value:
                 flags = []
                 if high_prob_draw:
                     flags.append("HIGH-PROB-DRAW")
-                p_00 = matrix[0, 0]
-                p_11 = matrix[1, 1]
                 line = (
                     f"VALUE BET: {match.home_team} vs {match.away_team} "
                     f"(Home: {edge_h:.3f}, Draw: {edge_d:.3f}, Away: {edge_a:.3f})"
                 )
                 if flags:
                     line += f" [{', '.join(flags)}]"
-                print(line)
+                logger.info(line)
 
                 # Kelly staking for DNB scenarios (Home DNB, Away DNB)
                 kelly_h = kelly_dnb_stake(model_h, model_d, h_odds)
                 kelly_a = kelly_dnb_stake(model_a, model_d, a_odds)
                 if kelly_h > 0.01 or kelly_a > 0.01:
-                    print(
-                        f"  Kelly DNB: Home {kelly_h:.1%}, Away {kelly_a:.1%}"
+                    logger.info(
+                        "  Kelly DNB: Home %.1f%%, Away %.1f%%",
+                        kelly_h * 100,
+                        kelly_a * 100,
                     )
 
 

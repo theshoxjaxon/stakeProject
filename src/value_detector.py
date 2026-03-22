@@ -5,12 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, List
 
+from src.config import KELLY_FRACTION
+
 
 @dataclass
 class ValueQuant:
     """Tools for transforming market odds into fair prices and stakes."""
 
-    kelly_fraction: float = 0.25
+    kelly_fraction: float = KELLY_FRACTION
 
     def remove_margin(self, odds: Iterable[float]) -> List[float]:
         """
@@ -67,4 +69,3 @@ class ValueQuant:
         full_kelly = (b * p - q) / b
         stake = self.kelly_fraction * full_kelly
         return max(0.0, min(1.0, stake))
-

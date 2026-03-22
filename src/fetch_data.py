@@ -23,7 +23,9 @@ def _american_to_decimal(american_odds: float) -> float:
     return round(1 + (100 / abs(american_odds)), 4)
 
 
-def _parse_h2h_outcomes(outcomes: list[dict], home_team: str, away_team: str) -> tuple[float, float, float] | None:
+def _parse_h2h_outcomes(
+    outcomes: list[dict], home_team: str, away_team: str
+) -> tuple[float, float, float] | None:
     """
     Parse h2h market outcomes into (h_odds, d_odds, a_odds).
     Soccer h2h typically has 3 outcomes: home, draw, away.
@@ -46,9 +48,13 @@ def _parse_h2h_outcomes(outcomes: list[dict], home_team: str, away_team: str) ->
     return None
 
 
-def fetch_odds_for_sport(sport_key: str, api_key: str, regions: str = "uk,eu") -> list[dict]:
+def fetch_odds_for_sport(
+    sport_key: str, api_key: str, regions: str = "uk,eu"
+) -> list[dict]:
     """
     Fetch upcoming events and odds from The Odds API for a given sport.
+
+    The v4 ``/odds`` endpoint returns only not-yet-started fixtures (future kickoffs).
     Uses uk,eu regions for soccer 1X2 (home/draw/away) markets.
     """
     url = f"{ODDS_API_BASE_URL}/sports/{sport_key}/odds"
@@ -148,12 +154,16 @@ def upsert_odds(session: Session, match: Match, event: dict) -> int:
 def ensure_teams(session: Session, team_names: set[str]) -> None:
     """Ensure all team names exist in the teams table."""
     for name in team_names:
-        existing = session.execute(select(Team).where(Team.name == name)).scalar_one_or_none()
+        existing = session.execute(
+            select(Team).where(Team.name == name)
+        ).scalar_one_or_none()
         if existing is None:
             session.add(Team(name=name, current_elo=1500.0))
 
 
-def fetch_scores_for_sport(sport_key: str, api_key: str, days_from: int = SCORES_DAYS_FROM) -> list[dict]:
+def fetch_scores_for_sport(
+    sport_key: str, api_key: str, days_from: int = SCORES_DAYS_FROM
+) -> list[dict]:
     """
     Fetch scores for a sport from The Odds API scores endpoint.
     days_from: 1-3 (API max). Returns live + recently completed games with scores.
@@ -190,7 +200,9 @@ def fetch_historical_scores() -> dict[str, int]:
             try:
                 events = fetch_scores_for_sport(sport_key, ODDS_API_KEY)
             except requests.RequestException as e:
-                raise RuntimeError(f"Failed to fetch scores for {sport_key}: {e}") from e
+                raise RuntimeError(
+                    f"Failed to fetch scores for {sport_key}: {e}"
+                ) from e
 
             for event in events:
                 if not event.get("completed") or not event.get("scores"):

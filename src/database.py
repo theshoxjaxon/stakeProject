@@ -38,7 +38,9 @@ def init_db(database_path: Path | str = DATABASE_PATH):
     return engine
 
 
-def ensure_team_ratings(session: Session, team_names: Iterable[str], default_elo: float = 1500.0) -> None:
+def ensure_team_ratings(
+    session: Session, team_names: Iterable[str], default_elo: float = 1500.0
+) -> None:
     """Ensure a TeamRating row exists for every team name in the iterable."""
     cleaned = {t for t in team_names if t}
     if not cleaned:
