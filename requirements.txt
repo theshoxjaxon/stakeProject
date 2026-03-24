@@ -10,3 +10,5 @@ alembic==1.18.4
 pytest>=8.0.0
 black>=24.0.0
 flake8>=7.0.0
+soccerdata>=1.5.1
+pandas>=2.3.3

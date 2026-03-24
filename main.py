@@ -18,11 +18,21 @@ from src.config import DATABASE_PATH, EDGE_THRESHOLD, SHOW_ONLY_VALUE_BETS
 from src.database import get_engine, init_db
 from src.models import Match, Odds
 from src.fetch_data import run_update_cycle
+from src.fetch_advanced import sync_league_xg
 from src.logger import get_logger
 from src.match_queries import matches_for_prediction
 from src.poisson_model import GoalEngine
 from src.value_detector import ValueQuant
 logger = get_logger(__name__)
+
+SPORT_LEAGUE_MAP = {
+    "soccer_epl": "ENG-Premier League",
+    "soccer_spain_la_liga": "ESP-La Liga",
+    "soccer_germany_bundesliga": "GER-Bundesliga",
+    "soccer_italy_serie_a": "ITA-Serie A",
+    "soccer_france_ligue_one": "FRA-Ligue 1",
+}
+
 # At the very top of main.py
 
 
@@ -72,6 +82,18 @@ def run_pipeline() -> None:
     """
     init_db(DATABASE_PATH)
     engine = get_engine(DATABASE_PATH)
+
+    # Sync xG data at the start of the pipeline
+    from src.config import DEFAULT_SPORTS
+    leagues_to_sync = [SPORT_LEAGUE_MAP[s] for s in DEFAULT_SPORTS if s in SPORT_LEAGUE_MAP]
+    current_year = datetime.now().year
+    seasons_to_sync = [current_year, current_year - 1]
+    
+    try:
+        sync_league_xg(leagues=leagues_to_sync, seasons=seasons_to_sync)
+    except Exception as e:
+        logger.error(f"Failed to sync xG data: {e}", exc_info=True)
+
 
     if _db_is_empty():
         logger.info(

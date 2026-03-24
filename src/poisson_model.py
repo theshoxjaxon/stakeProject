@@ -1,241 +1,203 @@
-"""Poisson-based goal model (GoalEngine) with optional home/away strength split and feature multipliers."""
+"""
+Production-grade goal prediction model based on the Dixon-Coles model,
+which extends the independent Poisson model to account for the correlation
+between home and away goals, particularly the low-scoring draw bias.
+
+The model parameters are estimated via maximum likelihood estimation.
+"""
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
-from typing import Dict, Tuple, Iterable
+from datetime import datetime
 
 import numpy as np
+import pandas as pd
+from scipy.optimize import minimize
+from scipy.special import gammaln
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError
 
 from src.models import Match, TeamRating
 
-MATRIX_SIZE = 6  # we model 0–5 goals
-LEAGUE_AVG_GOALS_PER_MATCH = 2.7  # rough global prior
+# Use the project's logger
+logger = logging.getLogger(__name__)
+
+MATRIX_SIZE = 6  # Set to 6x6 to align with main.py pipeline expectations
 
 
-def ensure_team_ratings(session: Session, team_names: Iterable[str]):
-    # This assumes TeamRating is defined in src.models
-    cleaned = {t for t in team_names if t}
-    if not cleaned:
-        return
-    existing = {name for (name,) in session.query(
-        TeamRating.team_name).filter(TeamRating.team_name.in_(cleaned)).all()}
-    for name in cleaned - existing:
-        session.add(TeamRating(team_name=name))
-    session.commit()
+def dixon_coles_tau(x: int, y: int, lam: float, mu: float, rho: float) -> float:
+    """The Dixon-Coles adjustment function for low-scoring draws."""
+    if x == 0 and y == 0:
+        return 1 - (lam * mu * rho)
+    if x == 0 and y == 1:
+        return 1 + (lam * rho)
+    if x == 1 and y == 0:
+        return 1 + (mu * rho)
+    if x == 1 and y == 1:
+        return 1 - rho
+    return 1.0
 
 
+def _dixon_coles_log_likelihood(
+    params: np.ndarray, matches: pd.DataFrame, teams: list[str]
+) -> float:
+    """Negative log-likelihood function for the Dixon-Coles model."""
+    num_teams = len(teams)
+    attack_params = params[0:num_teams]
+    defence_params = params[num_teams : 2 * num_teams]
+    home_adv = params[2 * num_teams]
+    rho = np.clip(params[2 * num_teams + 1], -0.19, 0.19)
 
-def _poisson_p(k: int, lam: float) -> float:
-    """Return Poisson P(X = k) with mean lam."""
-    if lam <= 0.0 or k < 0:
-        return 0.0
-    return (lam**k) * math.exp(-lam) / math.factorial(k)
+    team_map = {team: i for i, team in enumerate(teams)}
+    
+    home_indices = matches["home_team"].map(team_map).values
+    away_indices = matches["away_team"].map(team_map).values
+    
+    home_goals = matches["home_score"].values
+    away_goals = matches["away_score"].values
+
+    lam = np.exp(attack_params[home_indices] + defence_params[away_indices] + home_adv)
+    mu = np.exp(attack_params[away_indices] + defence_params[home_indices])
+
+    tau = np.ones_like(lam)
+    tau[(home_goals == 0) & (away_goals == 0)] = 1 - (lam[(home_goals == 0) & (away_goals == 0)] * mu[(home_goals == 0) & (away_goals == 0)] * rho)
+    tau[(home_goals == 0) & (away_goals == 1)] = 1 + (lam[(home_goals == 0) & (away_goals == 1)] * rho)
+    tau[(home_goals == 1) & (away_goals == 0)] = 1 + (mu[(home_goals == 1) & (away_goals == 0)] * rho)
+    tau[(home_goals == 1) & (away_goals == 1)] = 1 - rho
+    
+    tau = np.clip(tau, 1e-10, None)
+    
+    log_likelihood = np.sum(
+        -lam + home_goals * np.log(lam) - gammaln(home_goals + 1) +
+        -mu + away_goals * np.log(mu) - gammaln(away_goals + 1) +
+        np.log(tau)
+    )
+    return -log_likelihood
 
 
 @dataclass
 class GoalEngine:
-    """Goal probability engine using global attack/defense strengths."""
-
-    attack_strength: Dict[str, float] = field(default_factory=dict)
-    defense_strength: Dict[str, float] = field(default_factory=dict)
-    attack_home: Dict[str, float] = field(default_factory=dict)
-    attack_away: Dict[str, float] = field(default_factory=dict)
-    defense_home: Dict[str, float] = field(default_factory=dict)
-    defense_away: Dict[str, float] = field(default_factory=dict)
-
-    def fit_from_matches(self, session: Session, min_matches: int = 5) -> None:
+    """
+    A goal prediction model based on the Dixon-Coles paper.
+    """
+    teams: list[str] = field(default_factory=list)
+    attack_params: dict[str, float] = field(default_factory=dict)
+    defence_params: dict[str, float] = field(default_factory=dict)
+    home_advantage: float = 0.0
+    rho: float = 0.0
+    
+    def fit_from_matches(self, session: Session):
         """
-        Estimate attack/defense strengths from completed matches in the DB.
-
-        Teams with fewer than ``min_matches`` total appearances fall back to neutral (1.0).
-        When enough home/away games exist per team, separate home vs away strengths are used.
+        Fits the model parameters by maximizing the log-likelihood of observed matches.
         """
-        stmt = select(Match).where(
-            Match.status.in_(["completed", "finished"]),
-            Match.home_score.isnot(None),
-            Match.away_score.isnot(None),
-        )
-        matches = list(session.execute(stmt).scalars().all())
-        if not matches:
+        logger.info("Fitting Dixon-Coles model from database matches...")
+        
+        try:
+            stmt = select(Match).where(Match.status.in_(["completed", "finished"]))
+            matches_df = pd.read_sql(stmt, session.bind)
+            
+            if matches_df.empty:
+                logger.warning("No historical matches found to fit the model. Missing Data. Aborting fit.")
+                return
+        except (OperationalError, Exception) as e:
+            logger.error(f"Database error while fetching matches for fitting: {e}", exc_info=True)
+            logger.warning("Aborting fit due to missing data or database issue.")
             return
 
-        # Aggregate goals for league averages
-        total_goals = 0.0
-        total_home_goals = 0.0
-        total_away_goals = 0.0
-        n_m = float(len(matches))
+        self.teams = sorted(list(set(matches_df["home_team"]) | set(matches_df["away_team"])))
+        num_teams = len(self.teams)
 
-        # Per team: goals for/conceded when home vs away
-        ph: Dict[str, Dict[str, float]] = {}
-        pa: Dict[str, Dict[str, float]] = {}
+        initial_params = np.concatenate([
+            np.full(num_teams, 0.0), np.full(num_teams, 0.0), [0.1], [0.0],
+        ])
 
-        for m in matches:
-            hs = float(m.home_score)
-            as_ = float(m.away_score)
-            total_goals += hs + as_
-            total_home_goals += hs
-            total_away_goals += as_
+        constraints = [{'type': 'eq', 'fun': lambda x: sum(x[0:num_teams])}]
 
-            h, a = m.home_team, m.away_team
-            ph.setdefault(h, {"gf": 0.0, "ga": 0.0, "n": 0.0})
-            ph[h]["gf"] += hs
-            ph[h]["ga"] += as_
-            ph[h]["n"] += 1.0
-            pa.setdefault(a, {"gf": 0.0, "ga": 0.0, "n": 0.0})
-            pa[a]["gf"] += as_
-            pa[a]["ga"] += hs
-            pa[a]["n"] += 1.0
+        logger.info(f"Optimizing parameters for {num_teams} teams over {len(matches_df)} matches...")
+        
+        res = minimize(
+            _dixon_coles_log_likelihood,
+            initial_params,
+            args=(matches_df, self.teams),
+            constraints=constraints,
+            method='SLSQP',
+        )
 
-        league_avg_goals_per_team = (total_goals / max(n_m, 1.0)) / 2.0
-        avg_home = total_home_goals / max(n_m, 1.0)
-        avg_away = total_away_goals / max(n_m, 1.0)
+        if not res.success:
+            logger.error(f"Model fitting failed: {res.message}")
+            return
 
-        all_teams = set(ph.keys()) | set(pa.keys())
+        logger.info(f"Model fitted successfully. Final log-likelihood: {-res.fun:.2f}")
 
-        for team in all_teams:
-            st_all = ph.get(team, {"gf": 0.0, "ga": 0.0, "n": 0.0})
-            sa_all = pa.get(team, {"gf": 0.0, "ga": 0.0, "n": 0.0})
-            n_total = st_all["n"] + sa_all["n"]
-            if n_total < min_matches:
-                self.attack_strength[team] = 1.0
-                self.defense_strength[team] = 1.0
-                self.attack_home[team] = 1.0
-                self.attack_away[team] = 1.0
-                self.defense_home[team] = 1.0
-                self.defense_away[team] = 1.0
-                continue
+        opt_params = res.x
+        team_map = {team: i for i, team in enumerate(self.teams)}
+        self.attack_params = {team: opt_params[team_map[team]] for team in self.teams}
+        self.defence_params = {team: opt_params[num_teams + team_map[team]] for team in self.teams}
+        self.home_advantage = opt_params[2 * num_teams]
+        self.rho = np.clip(opt_params[2 * num_teams + 1], -0.19, 0.19)
+        
+        self._save_parameters(session)
 
-            # Blended (legacy) strengths
-            gf_t = st_all["gf"] + sa_all["gf"]
-            ga_t = st_all["ga"] + sa_all["ga"]
-            self.attack_strength[team] = (
-                gf_t / max(n_total, 1.0)
-            ) / league_avg_goals_per_team
-            self.defense_strength[team] = (
-                ga_t / max(n_total, 1.0)
-            ) / league_avg_goals_per_team
-
-            # Home split
-            sh = ph.get(team, {"gf": 0.0, "ga": 0.0, "n": 0.0})
-            nh = sh["n"]
-            if nh >= max(2, min_matches // 2):
-                self.attack_home[team] = (sh["gf"] / nh) / max(avg_home, 1e-6)
-                self.defense_home[team] = (sh["ga"] / nh) / max(avg_home, 1e-6)
-            else:
-                self.attack_home[team] = self.attack_strength[team]
-                self.defense_home[team] = self.defense_strength[team]
-
-            # Away split
-            sa = pa.get(team, {"gf": 0.0, "ga": 0.0, "n": 0.0})
-            na = sa["n"]
-            if na >= max(2, min_matches // 2):
-                self.attack_away[team] = (sa["gf"] / na) / max(avg_away, 1e-6)
-                self.defense_away[team] = (sa["ga"] / na) / max(avg_away, 1e-6)
-            else:
-                self.attack_away[team] = self.attack_strength[team]
-                self.defense_away[team] = self.defense_strength[team]
-
-        ensure_team_ratings(session, all_teams)
-
-    def _lambda_for_team(self, team: str, opponent: str, is_home: bool) -> float:
-        """Return expected goals (lambda) for a team vs an opponent."""
-        if is_home:
-            att = self.attack_home.get(team, self.attack_strength.get(team, 1.0))
-            opp_def = self.defense_away.get(
-                opponent, self.defense_strength.get(opponent, 1.0)
-            )
-        else:
-            att = self.attack_away.get(team, self.attack_strength.get(team, 1.0))
-            opp_def = self.defense_home.get(
-                opponent, self.defense_strength.get(opponent, 1.0)
-            )
-
-        base = (LEAGUE_AVG_GOALS_PER_MATCH / 2.0) * att * (1.0 / max(opp_def, 1e-6))
-        if is_home:
-            base *= 1.05  # mild home boost
-        return max(base, 1e-6)
-
-    def _build_matrix(self, lam_home: float, lam_away: float) -> np.ndarray:
-        """Build a 6×6 matrix of score probabilities."""
-        m = np.zeros((MATRIX_SIZE, MATRIX_SIZE))
-        for i in range(MATRIX_SIZE):
-            for j in range(MATRIX_SIZE):
-                m[i, j] = _poisson_p(i, lam_home) * _poisson_p(j, lam_away)
-        s = m.sum()
-        if s > 0:
-            m /= s
-        return m
-
-    def _hda_from_matrix(self, m: np.ndarray) -> Tuple[float, float, float]:
-        """Return (P_home, P_draw, P_away) from score matrix."""
-        p_draw = float(np.trace(m))
-        p_home = float(np.sum(np.tril(m, -1)))
-        p_away = float(np.sum(np.triu(m, 1)))
-        total = p_home + p_draw + p_away
-        if total > 0:
-            p_home /= total
-            p_draw /= total
-            p_away /= total
-        return p_home, p_draw, p_away
-
-    def _over_under_25(self, m: np.ndarray) -> Tuple[float, float]:
-        """Return (P_over_2_5, P_under_2_5) for total goals line 2.5."""
-        p_over = 0.0
-        p_under = 0.0
-        for i in range(MATRIX_SIZE):
-            for j in range(MATRIX_SIZE):
-                if i + j >= 3:
-                    p_over += m[i, j]
-                else:
-                    p_under += m[i, j]
-        return p_over, p_under
-
-    def _btts(self, m: np.ndarray) -> float:
-        """Return probability that both teams score at least once."""
-        p = 0.0
-        for i in range(1, MATRIX_SIZE):
-            for j in range(1, MATRIX_SIZE):
-                p += m[i, j]
-        return p
+    def _save_parameters(self, session: Session):
+        """Saves the fitted attack and defense parameters to the TeamRating table."""
+        logger.info("Saving fitted model parameters to the database...")
+        for team_name in self.teams:
+            rating = session.execute(
+                select(TeamRating).where(TeamRating.team_name == team_name)
+            ).scalar_one_or_none()
+            if not rating:
+                rating = TeamRating(team_name=team_name)
+                session.add(rating)
+            
+            rating.attack_strength = self.attack_params.get(team_name)
+            rating.defense_strength = self.defence_params.get(team_name)
+        
+        session.commit()
+        logger.info("Model parameters saved successfully.")
 
     def predict_match(
         self,
         home_team: str,
         away_team: str,
         session: Session | None = None,
-        kickoff: object | None = None,
+        kickoff: datetime | None = None,
         use_features: bool = True,
-    ) -> Tuple[np.ndarray, float, float, float, float, float]:
+    ) -> tuple[np.ndarray, float, float, float, float, float]:
         """
-        Predict score distribution and summary probabilities for a match.
-
-        When ``session`` and ``kickoff`` are provided and ``FEATURES_ENABLED`` is true,
-        applies form / H2H / rest multipliers from ``feature_engineering``.
+        Predicts the outcome of a match using the fitted Dixon-Coles model.
         """
-        lam_home = self._lambda_for_team(home_team, away_team, is_home=True)
-        lam_away = self._lambda_for_team(away_team, home_team, is_home=False)
+        if not all(p in self.teams for p in [home_team, away_team]):
+            logger.warning(f"Cannot predict: {home_team} or {away_team} not in fitted model.")
+            return np.zeros((MATRIX_SIZE, MATRIX_SIZE)), 0.33, 0.34, 0.33, 0.0, 0.0
 
-        if use_features and session is not None and kickoff is not None:
-            from datetime import datetime
+        lam = math.exp(self.attack_params.get(home_team, 0.0) + self.defence_params.get(away_team, 0.0) + self.home_advantage)
+        mu = math.exp(self.attack_params.get(away_team, 0.0) + self.defence_params.get(home_team, 0.0))
 
-            from src.config import FEATURES_ENABLED, FORM_WINDOW
-
-            if FEATURES_ENABLED:
+        if use_features and session and kickoff:
+            try:
                 from src.feature_engineering import compute_lambda_multipliers
+                mults = compute_lambda_multipliers(session, home_team, away_team, kickoff, 5) # Window is hardcoded for now
+                lam *= mults.home
+                mu *= mults.away
+            except Exception as e:
+                logger.warning(f"Could not apply feature multipliers: {e}", exc_info=True)
 
-                if isinstance(kickoff, datetime):
-                    mult = compute_lambda_multipliers(
-                        session, home_team, away_team, kickoff, FORM_WINDOW
-                    )
-                    lam_home *= mult.home
-                    lam_away *= mult.away
+        matrix = np.zeros((MATRIX_SIZE, MATRIX_SIZE))
+        for i in range(MATRIX_SIZE):
+            for j in range(MATRIX_SIZE):
+                tau = dixon_coles_tau(i, j, lam, mu, self.rho)
+                matrix[i, j] = tau * ((lam**i * math.exp(-lam)) / math.factorial(i)) * ((mu**j * math.exp(-mu)) / math.factorial(j))
 
-        m = self._build_matrix(lam_home, lam_away)
-        p_home, p_draw, p_away = self._hda_from_matrix(m)
-        p_over, _ = self._over_under_25(m)
-        p_btts = self._btts(m)
-        return m, p_home, p_draw, p_away, p_over, p_btts
+        matrix /= matrix.sum()
+        
+        p_home = float(np.sum(np.tril(matrix, -1)))
+        p_draw = float(np.trace(matrix))
+        p_away = float(np.sum(np.triu(matrix, 1)))
+        p_over_2_5 = float(np.sum(matrix[np.add.outer(range(MATRIX_SIZE), range(MATRIX_SIZE)) >= 3]))
+        p_btts = float(np.sum(matrix[1:, 1:]))
+
+        return matrix, p_home, p_draw, p_away, p_over_2_5, p_btts

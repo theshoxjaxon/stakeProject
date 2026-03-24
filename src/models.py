@@ -187,7 +187,89 @@ class Bet(Base):
     
     # Relationships
     prediction: Mapped["Prediction"] = relationship("Prediction", back_populates="bet")
-    
+
     __table_args__ = (
         Index("ix_bets_status_settled", "status", "settled_at"),
+    )
+
+# ============= NEW TABLES FOR ADVANCED ANALYTICS =============
+
+class TeamStats(Base):
+    """Store rolling aggregates of advanced team statistics."""
+
+    __tablename__ = "team_stats"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    team_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    
+    # Rolling window (e.g., last 5, 10 matches)
+    window_games: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    
+    # Aggregate stats over the window
+    avg_xg_for: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    avg_xg_against: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    avg_shots_for: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    avg_shots_against: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_team_stats_team_window", "team_name", "window_games", unique=True),
+    )
+
+
+class MatchAdvanced(Base):
+    """Store advanced per-match statistics (e.g., from FBref)."""
+
+    __tablename__ = "match_advanced"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    match_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("matches.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,  # One record per match
+        index=True,
+    )
+    
+    home_xg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    away_xg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    home_xgot: Mapped[float | None] = mapped_column(Float, nullable=True)
+    away_xgot: Mapped[float | None] = mapped_column(Float, nullable=True)
+    home_shots: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    away_shots: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    home_possession: Mapped[float | None] = mapped_column(Float, nullable=True)
+    away_possession: Mapped[float | None] = mapped_column(Float, nullable=True)
+    
+    source: Mapped[str] = mapped_column(String(50), nullable=False, default="fbref") # e.g. 'fbref', 'understat'
+    
+    match: Mapped["Match"] = relationship("Match")
+
+
+class PlayerInjury(Base):
+    """Track key player injuries and their expected return."""
+
+    __tablename__ = "player_injuries"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    player_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    team_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    
+    injury_description: Mapped[str] = mapped_column(String(255), nullable=False)
+    expected_return: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    
+    # Player importance (e.g., 1-5, 5 being critical)
+    importance: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    
+    # Status (e.g., 'out', 'doubtful', 'suspended')
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default='out')
+    
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+    
+    __table_args__ = (
+        Index("ix_player_injuries_team_status", "team_name", "status"),
     )
