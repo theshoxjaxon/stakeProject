@@ -5,7 +5,10 @@
       "Bash(python -c \"import tenacity; print\\(tenacity.__version__\\)\")",
       "Bash(python -c \"import tenacity; print\\('tenacity OK'\\)\")",
       "Bash(pip show *)",
-      "Bash(python -m alembic upgrade head)"
+      "Bash(python -m alembic upgrade head)",
+      "Bash(python -c \"import fastapi; print\\(fastapi.__version__\\)\")",
+      "Bash(python -c \"import uvicorn; print\\(uvicorn.__version__\\)\")",
+      "Bash(pip install *)"
     ]
   }
 }
