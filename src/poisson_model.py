@@ -95,18 +95,20 @@ class GoalEngine:
         Fits the model parameters by maximizing the log-likelihood of observed matches.
         """
         logger.info("Fitting Dixon-Coles model from database matches...")
-        
+
         try:
             stmt = select(Match).where(Match.status.in_(["completed", "finished"]))
-            matches_df = pd.read_sql(stmt, session.bind)
-            
-            if matches_df.empty:
-                logger.warning("No historical matches found to fit the model. Missing Data. Aborting fit.")
-                return
-        except (OperationalError, Exception) as e:
-            logger.error(f"Database error while fetching matches for fitting: {e}", exc_info=True)
-            logger.warning("Aborting fit due to missing data or database issue.")
-            return
+            matches_df = pd.read_sql(stmt, session.get_bind())
+        except OperationalError as e:
+            raise RuntimeError(
+                f"Database error fetching historical matches for model fitting: {e}"
+            ) from e
+
+        if matches_df.empty:
+            raise RuntimeError(
+                "Cannot fit model: no completed matches in the database. "
+                "Run a data backfill before calling fit_from_matches()."
+            )
 
         self.teams = sorted(list(set(matches_df["home_team"]) | set(matches_df["away_team"])))
         num_teams = len(self.teams)
@@ -170,12 +172,28 @@ class GoalEngine:
         """
         Predicts the outcome of a match using the fitted Dixon-Coles model.
         """
-        if not all(p in self.teams for p in [home_team, away_team]):
-            logger.warning(f"Cannot predict: {home_team} or {away_team} not in fitted model.")
-            return np.zeros((MATRIX_SIZE, MATRIX_SIZE)), 0.33, 0.34, 0.33, 0.0, 0.0
+        home_known = home_team in self.teams
+        away_known = away_team in self.teams
 
-        lam = math.exp(self.attack_params.get(home_team, 0.0) + self.defence_params.get(away_team, 0.0) + self.home_advantage)
-        mu = math.exp(self.attack_params.get(away_team, 0.0) + self.defence_params.get(home_team, 0.0))
+        if not home_known or not away_known:
+            if session is None:
+                logger.warning(
+                    f"Cold-start: {home_team!r} or {away_team!r} not in fitted model "
+                    "and no session provided for Elo fallback — returning uniform probabilities."
+                )
+                return np.zeros((MATRIX_SIZE, MATRIX_SIZE)), 0.33, 0.34, 0.33, 0.0, 0.0
+            from src.elo_model import elo_to_xg, get_elo_ratings
+            r_home, r_away = get_elo_ratings(session, home_team, away_team)
+            lam, mu = elo_to_xg(r_home, r_away)
+            logger.info(
+                f"Cold-start: unknown team(s) [{home_team!r} known={home_known}, "
+                f"{away_team!r} known={away_known}] — "
+                f"Elo fallback λ_home={lam:.3f}, λ_away={mu:.3f} "
+                f"(r_home={r_home:.0f}, r_away={r_away:.0f})"
+            )
+        else:
+            lam = math.exp(self.attack_params.get(home_team, 0.0) + self.defence_params.get(away_team, 0.0) + self.home_advantage)
+            mu = math.exp(self.attack_params.get(away_team, 0.0) + self.defence_params.get(home_team, 0.0))
 
         if use_features and session and kickoff:
             try:

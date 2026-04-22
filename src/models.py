@@ -36,6 +36,9 @@ class Match(Base):
     status: Mapped[str] = mapped_column(
         String(50), default="scheduled", nullable=False, index=True
     )
+    sport_key: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, index=True
+    )
 
     odds: Mapped[list["Odds"]] = relationship(
         "Odds",

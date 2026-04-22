@@ -7,12 +7,14 @@ how ``Match.date`` is stored (typically naive UTC from SQLite).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from src.advanced_features import get_injury_penalty, get_xg_multiplier
 from src.config import (
     FORM_WEIGHT,
     H2H_WEIGHT,
@@ -21,6 +23,8 @@ from src.config import (
     REST_SHORT_DAYS,
 )
 from src.models import Match
+
+logger = logging.getLogger(__name__)
 
 
 def utc_now_naive() -> datetime:
@@ -302,6 +306,20 @@ def compute_lambda_multipliers(
     if is_midweek_kickoff(kickoff):
         mh *= MIDWEEK_FATIGUE_FACTOR
         ma *= MIDWEEK_FATIGUE_FACTOR
+
+    # xG regression-to-mean: teams over/under-performing their xG are nudged back.
+    try:
+        mh *= get_xg_multiplier(home_team, session)
+        ma *= get_xg_multiplier(away_team, session)
+    except Exception as exc:
+        logger.debug("xG multiplier unavailable (%s) — skipping for this fixture.", exc)
+
+    # Injury/suspension availability penalty: compounds per unavailable key player.
+    try:
+        mh *= get_injury_penalty(home_team, session)
+        ma *= get_injury_penalty(away_team, session)
+    except Exception as exc:
+        logger.debug("Injury penalty unavailable (%s) — skipping for this fixture.", exc)
 
     return LambdaMultipliers(
         home=max(0.75, min(1.25, mh)), away=max(0.75, min(1.25, ma))

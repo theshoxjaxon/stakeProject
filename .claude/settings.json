@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sqlite3 /home/sean/Desktop/stackProject/data/betting.db \".schema\")",
+      "Bash(python -c \"import tenacity; print\\(tenacity.__version__\\)\")",
+      "Bash(python -c \"import tenacity; print\\('tenacity OK'\\)\")",
+      "Bash(pip show *)",
+      "Bash(python -m alembic upgrade head)"
+    ]
+  }
+}
