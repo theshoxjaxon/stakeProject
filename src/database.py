@@ -1,13 +1,14 @@
 """Database engine helpers for the football prediction system."""
 
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
+
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from src.config import DATABASE_PATH
 from src.models import Base
-
-# 1. Define the Engine Helper so Sessionmaker can use it
 
 
 def get_engine(database_path: Path | str = DATABASE_PATH):
@@ -17,10 +18,17 @@ def get_engine(database_path: Path | str = DATABASE_PATH):
     return create_engine(f"sqlite:///{path}", echo=False)
 
 
-# 3. Define SessionLocal NOW that get_engine exists
 SessionLocal = sessionmaker(bind=get_engine())
 
-# 4. Database Management Functions
+
+@contextmanager
+def get_session() -> Iterator[Session]:
+    """Context-managed session bound to the default engine."""
+    session = SessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
 
 
 def init_db(database_path: Path | str = DATABASE_PATH):

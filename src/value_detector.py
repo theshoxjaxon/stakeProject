@@ -26,7 +26,9 @@ class ValueQuant:
         if not ps:
             return list(odds)
 
-        lo, hi = 0.0, min(ps) - 1e-9
+        # c may exceed min(ps) when one implied prob is tiny (max(p-c, 0) drops
+        # that outcome), so search up to max(ps) where total() is guaranteed <= 1.
+        lo, hi = 0.0, max(ps)
 
         def total(c: float) -> float:
             return sum(max(p - c, 0.0) for p in ps)
@@ -49,23 +51,32 @@ class ValueQuant:
             fair.append(1.0 / p_adj)
         return fair
 
+    def stake_from_prob(self, p: float, odds: float) -> float:
+        """
+        Fractional Kelly stake from the model's own win probability ``p``
+        and the market decimal odds actually available to bet at.
+        """
+        if odds <= 0 or p <= 0.0 or p >= 1.0:
+            return 0.0
+        b = odds - 1.0
+        if b <= 0:
+            return 0.0
+        q = 1.0 - p
+        full_kelly = (b * p - q) / b
+        stake = self.kelly_fraction * full_kelly
+        return max(0.0, min(1.0, stake))
+
     def calculate_stake(self, edge: float, odds: float) -> float:
         """
         Fractional Kelly stake as a fraction of bankroll.
 
         Assumes our true probability is p = implied + edge, where
-        implied = 1 / odds and edge = p - implied.
+        implied = 1 / odds and edge = p - implied. Prefer
+        ``stake_from_prob`` when the model probability is available —
+        reconstructing p from a de-margined edge plus the raw implied
+        probability inflates p by the bookmaker margin share.
         """
         if odds <= 0:
             return 0.0
         implied = 1.0 / odds
-        p = implied + edge
-        if p <= 0.0 or p >= 1.0:
-            return 0.0
-        q = 1.0 - p
-        b = odds - 1.0
-        if b <= 0:
-            return 0.0
-        full_kelly = (b * p - q) / b
-        stake = self.kelly_fraction * full_kelly
-        return max(0.0, min(1.0, stake))
+        return self.stake_from_prob(implied + edge, odds)

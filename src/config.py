@@ -68,6 +68,26 @@ DEFAULT_SPORTS = [
     if s.strip()
 ] or ["soccer_epl"]
 
+# Tournament auto-detection: when a candidate competition is in season
+# (World Cup, Euros, UCL, ...) its matches join the update cycle automatically.
+TOURNAMENT_AUTO_DETECT = _bool("TOURNAMENT_AUTO_DETECT", True)
+TOURNAMENT_SPORT_KEYS = [
+    s.strip()
+    for s in os.getenv(
+        "TOURNAMENT_SPORT_KEYS",
+        "soccer_fifa_world_cup,"
+        "soccer_uefa_european_championship,"
+        "soccer_uefa_champs_league,"
+        "soccer_uefa_europa_league,"
+        "soccer_conmebol_copa_america",
+    ).split(",")
+    if s.strip()
+]
+SPORTS_CACHE_TTL_HOURS = max(1, _int("SPORTS_CACHE_TTL_HOURS", "12"))
+
+# xG scrape (FBref via soccerdata) is slow and easily rate-limited — opt in.
+XG_SYNC_ENABLED = _bool("XG_SYNC_ENABLED", False)
+
 # Reporting / BTTS
 BTTS_VALUE_THRESHOLD = _float("BTTS_VALUE_THRESHOLD", "0.05")
 

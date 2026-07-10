@@ -9,16 +9,19 @@ prime the database with recent results before running Elo updates.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 import requests
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from src.config import DEFAULT_SPORTS, ODDS_API_BASE_URL, ODDS_API_KEY, SCORES_DAYS_FROM
+from src.config import ODDS_API_BASE_URL, ODDS_API_KEY, SCORES_DAYS_FROM
 from src.database import get_engine, init_db
 from src.models import Match, TeamRating
 from src.elo import EloEngine
+
+logger = logging.getLogger(__name__)
 
 
 def _fetch_scores_for_sport(
@@ -138,13 +141,19 @@ def run_backfill() -> int:
     int
         Number of matches updated or created.
     """
+    from src.tournaments import resolve_sport_keys
+
     init_db()
     engine = get_engine()
 
     updated = 0
     with Session(engine) as session:
-        for sport in DEFAULT_SPORTS:
-            events = _fetch_scores_for_sport(sport, days_from=SCORES_DAYS_FROM)
+        for sport in resolve_sport_keys():
+            try:
+                events = _fetch_scores_for_sport(sport, days_from=SCORES_DAYS_FROM)
+            except requests.RequestException as exc:
+                logger.warning("Backfill: skipping %s — scores fetch failed: %s", sport, exc)
+                continue
             for ev in events:
                 if _upsert_match_from_event(session, ev):
                     updated += 1

@@ -61,6 +61,10 @@ def setup_logging(
             "Could not create log file under %s; using console only", ld
         )
 
+    # Third-party HTTP/SDK loggers are chatty at INFO — keep the console clean.
+    for noisy in ("httpx", "httpcore", "google_genai", "urllib3"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
     _configured = True
 
 

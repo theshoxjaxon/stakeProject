@@ -1,7 +1,7 @@
 """Fetch upcoming matches and odds from The Odds API."""
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import requests
 from tenacity import (
@@ -18,7 +18,6 @@ from src.config import (
     DATABASE_PATH,
     ODDS_API_BASE_URL,
     ODDS_API_KEY,
-    DEFAULT_SPORTS,
     SCORES_DAYS_FROM,
 )
 from src.database import get_engine, init_db
@@ -266,9 +265,10 @@ def fetch_scores_for_sport(
     return response.json()
 
 
-def fetch_historical_scores() -> dict[str, int]:
+def fetch_historical_scores(sport_keys: list[str] | None = None) -> dict[str, int]:
     """
-    Fetch historical scores for DEFAULT_SPORTS (last SCORES_DAYS_FROM days).
+    Fetch historical scores (last SCORES_DAYS_FROM days) for the given sports —
+    defaults to the configured leagues plus any tournament currently in season.
     Updates matches table with home_score, away_score, status='completed'.
     Returns {"matches_updated": N, "sports_processed": N}.
     """
@@ -277,6 +277,11 @@ def fetch_historical_scores() -> dict[str, int]:
             "ODDS_API_KEY not set. Add it to a .env file or set the environment variable."
         )
 
+    if sport_keys is None:
+        from src.tournaments import resolve_sport_keys
+
+        sport_keys = resolve_sport_keys()
+
     init_db(DATABASE_PATH)
     engine = get_engine(DATABASE_PATH)
     matches_updated = 0
@@ -284,7 +289,7 @@ def fetch_historical_scores() -> dict[str, int]:
     with Session(engine) as session:
         team_names: set[str] = set()
 
-        for sport_key in DEFAULT_SPORTS:
+        for sport_key in sport_keys:
             try:
                 events = fetch_scores_for_sport(sport_key, ODDS_API_KEY)
             except requests.exceptions.HTTPError as exc:
@@ -372,21 +377,29 @@ def fetch_historical_scores() -> dict[str, int]:
 
     return {
         "matches_updated": matches_updated,
-        "sports_processed": len(DEFAULT_SPORTS),
+        "sports_processed": len(sport_keys),
     }
 
 
-def run_update_cycle() -> dict[str, int]:
+def run_update_cycle(sport_keys: list[str] | None = None) -> dict[str, int]:
     """
-    Run a single update cycle: fetch odds for default sports and persist to SQLite.
-    Handles duplicates by checking match_id before inserting matches.
-    Returns summary: {"matches_added": N, "odds_added": N, "sports_processed": N}
+    Run a single update cycle: fetch odds and persist to SQLite for the given
+    sports — defaults to the configured leagues plus any tournament currently
+    in season (see src.tournaments). Handles duplicates by checking match_id
+    before inserting matches.
+    Returns summary: {"matches_processed": N, "odds_inserted": N,
+    "odds_updated": N, "sports_skipped_cache": N, "sports_processed": N}
     """
     if not ODDS_API_KEY:
         raise ValueError(
             "ODDS_API_KEY not set. Add it to a .env file or set the environment variable. "
             "Get your key at https://the-odds-api.com/"
         )
+
+    if sport_keys is None:
+        from src.tournaments import resolve_sport_keys
+
+        sport_keys = resolve_sport_keys()
 
     init_db(DATABASE_PATH)
     engine = get_engine(DATABASE_PATH)
@@ -397,7 +410,7 @@ def run_update_cycle() -> dict[str, int]:
     team_names: set[str] = set()
 
     with Session(engine) as session:
-        for sport_key in DEFAULT_SPORTS:
+        for sport_key in sport_keys:
 
             # ── Credit Protector ────────────────────────────────────────────
             # Check freshness BEFORE the retry-decorated network call so we
@@ -453,5 +466,5 @@ def run_update_cycle() -> dict[str, int]:
         "odds_inserted": odds_inserted,
         "odds_updated": odds_updated,
         "sports_skipped_cache": sports_skipped,
-        "sports_processed": len(DEFAULT_SPORTS),
+        "sports_processed": len(sport_keys),
     }

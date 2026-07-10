@@ -176,14 +176,22 @@ def sync_league_xg(leagues: list[str], seasons: list[int]) -> dict[str, int]:
                 continue
 
             try:
-                session.merge(
-                    MatchAdvanced(
-                        match_id=match.id,
-                        home_xg=float(home_xg),
-                        away_xg=float(away_xg),
-                        source="fbref",
+                existing = session.execute(
+                    select(MatchAdvanced).where(MatchAdvanced.match_id == match.id)
+                ).scalar_one_or_none()
+                if existing is None:
+                    session.add(
+                        MatchAdvanced(
+                            match_id=match.id,
+                            home_xg=float(home_xg),
+                            away_xg=float(away_xg),
+                            source="fbref",
+                        )
                     )
-                )
+                else:
+                    existing.home_xg = float(home_xg)
+                    existing.away_xg = float(away_xg)
+                    existing.source = "fbref"
                 upserted_count += 1
             except Exception as e:
                 logger.error(

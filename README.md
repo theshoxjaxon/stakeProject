@@ -1,6 +1,8 @@
 # Quantitative Football Betting Engine
 
-Python 3.11+ project that estimates 1X2 probabilities with a **Poisson goal model**, compares them to bookmaker odds (with **margin removal**), and suggests **fractional Kelly** stakes. Optional **form, head-to-head, rest, and midweek** adjustments nudge expected goals (λ) before building the score matrix.
+Python 3.11+ project that estimates 1X2 probabilities with a **Dixon-Coles goal model**, compares them to bookmaker odds (with **margin removal**), and suggests **fractional Kelly** stakes. Optional **form, head-to-head, rest, midweek, xG, and injury** adjustments nudge expected goals (λ) before building the score matrix. Major tournaments (**World Cup, Euros, UCL, Europa League, Copa América**) are picked up automatically while in season.
+
+> 📖 **Full documentation lives in [DOCUMENTATION.md](DOCUMENTATION.md)** — setup, exact run commands, architecture, configuration reference, and an honest accuracy/code-health assessment. This README is the short landing page.
 
 ---
 
@@ -153,7 +155,7 @@ GitHub Actions (`.github/workflows/ci.yml`): install deps, **`alembic upgrade he
 - **SQLite** stores datetimes without time zone; the app compares using **UTC-consistent** “now” and normalizes where needed (`match_queries`, `feature_engineering`).
 - **Form/H2H** need enough **completed** rows in `matches`; thin data → multipliers stay near 1.0.
 - **Odds API** `/odds` returns **upcoming** events only; scores endpoint is **limited to a few days**—full season history needs another data source.
-- **No** `predictions` / `bets` tables yet—extend `models.py` + Alembic when you want audited bet tracking.
+- `predictions` / `bets` tables track every model output and settlement — see `src/settle_bets.py` and `src/accountant.py`.
 
 ---
 

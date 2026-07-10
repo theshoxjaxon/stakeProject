@@ -208,9 +208,11 @@ def get_performance_summary(session: Session, days: int = 7) -> dict:
 
 def get_todays_predictions(session: Session) -> list:
     """Get all predictions made today."""
+    from datetime import timedelta
+
     today = datetime.utcnow().date()
-    tomorrow = today.replace(day=today.day + 1)
-    
+    tomorrow = today + timedelta(days=1)
+
     return session.query(Prediction).filter(
         Prediction.created_at >= today,
         Prediction.created_at < tomorrow

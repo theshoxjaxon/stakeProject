@@ -4,3 +4,7 @@ __pycache__/
 venv/
 .env
 data/logs/*.log
+data/sports_cache.json
+error.log
+*.backup
+*.save

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from src.database import get_engine
 from src.models import Prediction, Match
 
+
 def settle_bets() -> None:
     """
     Matches saved predictions with actual results and updates the database.
@@ -15,7 +16,7 @@ def settle_bets() -> None:
     engine = get_engine()
     with Session(engine) as session:
         # 1. Grab all predictions that haven't been settled yet
-        stmt = select(Prediction).where(Prediction.result_settled == False)
+        stmt = select(Prediction).where(Prediction.result_settled.is_(False))
         pending_preds = list(session.execute(stmt).scalars().all())
 
         if not pending_preds:
@@ -28,7 +29,12 @@ def settle_bets() -> None:
             # 2. Look for the corresponding match result
             match = session.get(Match, pred.match_id)
 
-            if not match or match.status not in ("completed", "finished") or match.home_score is None or match.away_score is None:
+            if (
+                not match
+                or match.status not in ("completed", "finished")
+                or match.home_score is None
+                or match.away_score is None
+            ):
                 continue
 
             h_score = match.home_score
@@ -40,23 +46,28 @@ def settle_bets() -> None:
                 actual_outcome = "H"
             elif a_score > h_score:
                 actual_outcome = "A"
-            
+
+            # Predictions with no recommended side ("Skip") carry no stake:
+            # record the outcome but keep them out of win/loss accounting.
+            if pred.recommended_selection is None:
+                pred.actual_outcome = actual_outcome
+                pred.result_settled = True
+                pred.settled_at = datetime.utcnow()
+                continue
+
             # 4. Logic: Did the prediction win?
             won = (pred.recommended_selection == actual_outcome)
 
+            market_odds = {
+                "H": pred.market_home,
+                "D": pred.market_draw,
+                "A": pred.market_away,
+            }.get(pred.recommended_selection) or 0.0
+
             # 5. Calculate profit
             profit = -pred.recommended_stake_amount
-            if won:
-                market_odds = 0.0
-                if pred.recommended_selection == "H":
-                    market_odds = pred.market_home
-                elif pred.recommended_selection == "D":
-                    market_odds = pred.market_draw
-                elif pred.recommended_selection == "A":
-                    market_odds = pred.market_away
-                
-                if market_odds and market_odds > 0:
-                    profit = pred.recommended_stake_amount * (market_odds - 1)
+            if won and market_odds > 0:
+                profit = pred.recommended_stake_amount * (market_odds - 1)
 
             # 6. Update the Prediction record
             pred.actual_outcome = actual_outcome
@@ -64,16 +75,18 @@ def settle_bets() -> None:
             pred.profit = profit
             pred.result_settled = True
             pred.settled_at = datetime.utcnow()
-            
+
             status = "WIN ✅" if won else "LOSS ❌"
             print(
                 f"Match: {match.home_team} vs {match.away_team} | Result: {h_score}-{a_score} | "
-                f"Prediction: {pred.recommended_selection} @ {market_odds:.2f} | Stake: {pred.recommended_stake_amount:.0f} | "
+                f"Prediction: {pred.recommended_selection} @ {market_odds:.2f} | "
+                f"Stake: {pred.recommended_stake_amount:.0f} | "
                 f"Profit: {profit:.0f} | {status}"
             )
 
         session.commit()
         print("💾 Database updated. You can now run the Accountant Report.")
+
 
 if __name__ == "__main__":
     settle_bets()

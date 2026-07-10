@@ -22,6 +22,7 @@ from src.match_queries import (
 )
 from src.models import Match
 from src.poisson_model import GoalEngine
+from src.tournaments import get_active_tournaments
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +203,11 @@ class RefitResponse(BaseModel):
     message: str
 
 
+class TournamentOut(BaseModel):
+    key: str
+    title: str
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -220,6 +226,22 @@ def health(request: Request) -> HealthResponse:
         teams_fitted=len(ge.teams),
         database=str(DATABASE_PATH),
     )
+
+
+@app.get(
+    "/tournaments/active",
+    response_model=list[TournamentOut],
+    tags=["Matches"],
+    summary="Tournaments currently in season",
+)
+def active_tournaments() -> list[TournamentOut]:
+    """
+    Candidate tournaments (World Cup, Euros, UCL, Europa League, Copa América)
+    that The Odds API currently marks as in season. The frontend can use this
+    to render competition tabs; results are cached server-side for
+    SPORTS_CACHE_TTL_HOURS.
+    """
+    return [TournamentOut(**t) for t in get_active_tournaments()]
 
 
 @app.get(

@@ -3,7 +3,7 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from src.models import Team
+from src.models import Team, TeamRating
 
 HOME_ADVANTAGE = 50
 K_FACTOR = 20
@@ -27,6 +27,22 @@ def init_ratings(session: Session) -> int:
     return len(teams)
 
 
+def _rating_for(session: Session, team_name: str) -> float:
+    """
+    Elo for one team: prefer team_ratings (written by the Elo backfill),
+    fall back to the legacy teams.current_elo column, else the base rating.
+    """
+    rating = session.execute(
+        select(TeamRating.elo_rating).where(TeamRating.team_name == team_name)
+    ).scalar_one_or_none()
+    if rating is not None:
+        return float(rating)
+    legacy = session.execute(
+        select(Team.current_elo).where(Team.name == team_name)
+    ).scalar_one_or_none()
+    return float(legacy) if legacy is not None else float(BASE_RATING)
+
+
 def get_elo_ratings(
     session: Session, home_team: str, away_team: str
 ) -> tuple[float, float]:
@@ -34,15 +50,7 @@ def get_elo_ratings(
     Get Elo ratings from DB. Returns (r_home, r_away) raw ratings.
     Use elo_to_xg or expected_score with HOME_ADVANTAGE for calculations.
     """
-    home = session.execute(
-        select(Team).where(Team.name == home_team)
-    ).scalar_one_or_none()
-    away = session.execute(
-        select(Team).where(Team.name == away_team)
-    ).scalar_one_or_none()
-    r_home = home.current_elo if home else BASE_RATING
-    r_away = away.current_elo if away else BASE_RATING
-    return (r_home, r_away)
+    return (_rating_for(session, home_team), _rating_for(session, away_team))
 
 
 def update_ratings(
