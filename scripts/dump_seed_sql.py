@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Dump INSERT-friendly SQL from SQLite tables (optional dev backup / seed generation)."""
+"""Dump INSERT-friendly SQL from a SQLite file (optional dev backup / seed generation).
+
+NOTE: This tool reads via the stdlib ``sqlite3`` module directly — it only works
+against a SQLite file, never against the project's configured PostgreSQL
+DATABASE_URL. Pass ``--database`` to point it at an old/legacy .db file
+(e.g. a snapshot taken before the Postgres migration).
+"""
 
 from __future__ import annotations
 
@@ -8,12 +14,6 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
-
-_PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
-
-from src.config import DATABASE_PATH, PROJECT_ROOT
 
 
 def dump_with_sqlite3_cli(db_path: Path) -> None:
@@ -65,8 +65,8 @@ def main() -> None:
     parser.add_argument(
         "--database",
         type=Path,
-        default=DATABASE_PATH,
-        help=f"SQLite file (default: {DATABASE_PATH})",
+        required=True,
+        help="Path to a SQLite .db file (e.g. a pre-Postgres-migration snapshot).",
     )
     parser.add_argument(
         "--full",
@@ -82,7 +82,7 @@ def main() -> None:
     args = parser.parse_args()
     db_path = args.database
     if not db_path.is_absolute():
-        db_path = (PROJECT_ROOT / db_path).resolve()
+        db_path = (_PROJECT_ROOT / db_path).resolve()
 
     if not db_path.is_file():
         print(f"Database not found: {db_path}", file=sys.stderr)

@@ -15,8 +15,11 @@ from src.models import Match
 
 @pytest.fixture()
 def memory_session() -> Session:
+    # Scoped to Match only: Base.metadata now also holds Postgres-only types
+    # (CITEXT, JSONB, UUID) on the multi-tenant tables, which SQLite can't
+    # render — these tests only need Match, so create just that table.
     engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
+    Base.metadata.create_all(engine, tables=[Match.__table__])
     with Session(engine) as session:
         yield session
         session.rollback()

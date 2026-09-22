@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.config import (
-    DATABASE_PATH,
+    DATABASE_URL,
     ODDS_API_BASE_URL,
     ODDS_API_KEY,
     SCORES_DAYS_FROM,
@@ -282,8 +282,8 @@ def fetch_historical_scores(sport_keys: list[str] | None = None) -> dict[str, in
 
         sport_keys = resolve_sport_keys()
 
-    init_db(DATABASE_PATH)
-    engine = get_engine(DATABASE_PATH)
+    init_db(DATABASE_URL)
+    engine = get_engine(DATABASE_URL)
     matches_updated = 0
 
     with Session(engine) as session:
@@ -401,8 +401,8 @@ def run_update_cycle(sport_keys: list[str] | None = None) -> dict[str, int]:
 
         sport_keys = resolve_sport_keys()
 
-    init_db(DATABASE_PATH)
-    engine = get_engine(DATABASE_PATH)
+    init_db(DATABASE_URL)
+    engine = get_engine(DATABASE_URL)
     matches_processed = 0
     odds_inserted = 0
     odds_updated = 0

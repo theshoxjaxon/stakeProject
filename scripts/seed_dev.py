@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Insert minimal development rows into the SQLite database (idempotent-ish)."""
+"""Insert minimal development rows into the configured database (idempotent-ish)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from sqlalchemy.orm import Session
 
-from src.config import DATABASE_PATH, PROJECT_ROOT
+from src.config import DATABASE_URL
 from src.database import get_engine
 from src.models import Match, Odds, Team, TeamRating
 
@@ -68,23 +68,18 @@ def seed(session: Session) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Seed development data into SQLite.")
+    parser = argparse.ArgumentParser(description="Seed development data into the database.")
     parser.add_argument(
         "--database",
-        type=Path,
-        default=DATABASE_PATH,
-        help=f"SQLite file (default: {DATABASE_PATH})",
+        type=str,
+        default=DATABASE_URL,
+        help="SQLAlchemy DATABASE_URL to seed (default: the configured DATABASE_URL).",
     )
     args = parser.parse_args()
-    db_path = args.database
-    if not db_path.is_absolute():
-        db_path = (PROJECT_ROOT / db_path).resolve()
-
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    engine = get_engine(db_path)
+    engine = get_engine(args.database)
     with Session(engine) as session:
         seed(session)
-    print(f"Seed complete: {db_path}")
+    print(f"Seed complete: {engine.url.render_as_string(hide_password=True)}")
 
 
 if __name__ == "__main__":

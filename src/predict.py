@@ -6,7 +6,7 @@ import numpy as np
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from src.config import DATABASE_PATH, EDGE_THRESHOLD
+from src.config import DATABASE_URL, EDGE_THRESHOLD
 from src.database import get_engine, init_db
 from src.models import Odds
 from src.elo_model import LEAGUE_AVG_GOALS, elo_to_xg, get_elo_ratings
@@ -164,8 +164,8 @@ def run_value_detection(edge_threshold: float | None = None) -> None:
     """
     if edge_threshold is None:
         edge_threshold = EDGE_THRESHOLD
-    init_db(DATABASE_PATH)
-    engine = get_engine(DATABASE_PATH)
+    init_db(DATABASE_URL)
+    engine = get_engine(DATABASE_URL)
 
     with Session(engine) as session:
         # Kickoff in the future (UTC); optional horizon from PREDICTION_HORIZON_DAYS

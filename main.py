@@ -18,7 +18,7 @@ from src.ai_advisor import advisor_enabled, get_ai_betting_advice
 from src.backfill import run_backfill
 from src.elo_model import BASE_RATING, get_elo_ratings
 from src.config import (
-    DATABASE_PATH,
+    DATABASE_URL,
     EDGE_THRESHOLD,
     SHOW_ONLY_VALUE_BETS,
     XG_SYNC_ENABLED,
@@ -57,8 +57,8 @@ def _fmt_kickoff(dt: datetime | None) -> str:
 
 def _db_is_empty() -> bool:
     """Return True if the matches table has no rows."""
-    init_db(DATABASE_PATH)
-    engine = get_engine(DATABASE_PATH)
+    init_db(DATABASE_URL)
+    engine = get_engine(DATABASE_URL)
     with Session(engine) as session:
         row = session.execute(select(Match.id).limit(1)).first()
         return row is None
@@ -155,6 +155,8 @@ def _upsert_prediction(
     ).scalar_one_or_none()
 
     values = dict(
+        kickoff=match.date,
+        league=match.sport_key,
         home_prob=probs["H"],
         draw_prob=probs["D"],
         away_prob=probs["A"],
@@ -189,8 +191,8 @@ def run_pipeline() -> None:
     4. Fit the Dixon-Coles engine from completed matches.
     5. Predict every upcoming match with odds; save predictions; print table.
     """
-    init_db(DATABASE_PATH)
-    engine = get_engine(DATABASE_PATH)
+    init_db(DATABASE_URL)
+    engine = get_engine(DATABASE_URL)
 
     _sync_xg_if_enabled()
 

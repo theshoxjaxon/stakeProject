@@ -9,10 +9,17 @@ from datetime import datetime
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from src.config import DATABASE_PATH
+from src.api.deps import db_engine, get_db, get_redis
+from src.api.routers import auth as auth_router
+from src.api.routers import org as org_router
+from src.api.routers import predictions as predictions_router
+from src.api.serializers import MODEL_VERSION
+from src.config import DATABASE_URL
 from src.database import get_engine, init_db
 from src.match_queries import (
     BetSortField,
@@ -27,28 +34,19 @@ from src.tournaments import get_active_tournaments
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# CORS — configurable via CORS_ORIGINS env var (comma-separated list of origins)
-# Defaults to every common local frontend dev-server port so the React app
-# on localhost works out of the box without touching .env.
+# CORS — exactly one dashboard origin, credentials allowed. Never a wildcard
+# or a list here: allow_credentials=True with allow_origins=["*"] leaks
+# cross-origin credentialed requests to any site (browsers reject the literal
+# "*" combination, but there's no reason to rely on that as the only guard).
 # ---------------------------------------------------------------------------
 
-_DEFAULT_CORS_ORIGINS: list[str] = [
-    "http://localhost:3000",   # Create React App
-    "http://localhost:5173",   # Vite (React / Vue / Svelte)
-    "http://localhost:5174",   # Vite alt port
-    "http://localhost:8080",   # Vue CLI / Webpack dev server
-    "http://localhost:4200",   # Angular CLI
-    "http://127.0.0.1:3000",
-    "http://127.0.0.1:5173",
-]
-
-
-def _resolve_cors_origins() -> list[str]:
-    """Return CORS origins from env var or fall back to local-dev defaults."""
-    raw = os.getenv("CORS_ORIGINS", "").strip()
-    if raw:
-        return [o.strip() for o in raw.split(",") if o.strip()]
-    return _DEFAULT_CORS_ORIGINS
+DASHBOARD_ORIGIN = os.getenv("DASHBOARD_ORIGIN", "http://localhost:5173").strip()
+if DASHBOARD_ORIGIN == "*" or "," in DASHBOARD_ORIGIN:
+    raise RuntimeError(
+        "DASHBOARD_ORIGIN must be a single, exact origin — never '*' or a "
+        "comma-separated list — because CORS is configured with "
+        "allow_credentials=True."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -60,8 +58,8 @@ def _resolve_cors_origins() -> list[str]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialise database schema and fit the Dixon-Coles GoalEngine."""
-    init_db(DATABASE_PATH)
-    db_engine = get_engine(DATABASE_PATH)
+    init_db(DATABASE_URL)
+    db_engine = get_engine(DATABASE_URL)
     goal_engine = GoalEngine()
 
     with Session(db_engine) as session:
@@ -99,30 +97,24 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_resolve_cors_origins(),
+    allow_origins=[DASHBOARD_ORIGIN],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------------------------------------------------------------------------
-# DB dependency — one session per request, closed automatically on teardown.
-# Using a module-level engine so SQLAlchemy's connection pool is shared across
-# requests rather than re-created on every call.
-# ---------------------------------------------------------------------------
+app.include_router(auth_router.router, prefix="/v1/auth", tags=["Auth"])
+app.include_router(predictions_router.router, prefix="/v1/predictions", tags=["Predictions"])
+app.include_router(org_router.router, prefix="/v1/org", tags=["Organization"])
 
-_db_engine = get_engine(DATABASE_PATH)
-
-
-def get_db():
-    """Request-scoped SQLAlchemy session (sync). Safe for lazy-loaded relationships."""
-    with Session(_db_engine) as session:
-        yield session
-
+# DB dependency: get_db / db_engine live in src.api.deps (imported above) so
+# that module stays the single owner of the pooled engine — deps never
+# imports from this package's __init__, only the other way around.
 
 # ---------------------------------------------------------------------------
 # Pydantic response / request schemas
 # ---------------------------------------------------------------------------
+
 
 class HealthResponse(BaseModel):
     status: str
@@ -219,13 +211,55 @@ class TournamentOut(BaseModel):
     summary="Liveness check",
 )
 def health(request: Request) -> HealthResponse:
-    """Returns server status, number of teams the model knows, and DB path."""
+    """Returns server status, number of teams the model knows, and DB target (no credentials)."""
     ge: GoalEngine = request.app.state.goal_engine
+    url = db_engine.url
     return HealthResponse(
         status="ok",
         teams_fitted=len(ge.teams),
-        database=str(DATABASE_PATH),
+        database=f"{url.get_backend_name()}://{url.host or 'localhost'}:{url.port or 5432}/{url.database}",
     )
+
+
+@app.get("/healthz", tags=["System"], summary="Liveness probe")
+def healthz() -> dict:
+    """
+    Process-is-alive check. Deliberately checks nothing else: a liveness
+    probe that depends on the DB/Redis being reachable causes an orchestrator
+    to kill and restart a perfectly healthy process during a downstream
+    outage. That's what /readyz is for.
+    """
+    return {"status": "ok"}
+
+
+@app.get("/readyz", tags=["System"], summary="Readiness probe (DB + Redis)")
+def readyz(
+    db: Session = Depends(get_db),
+    redis_client=Depends(get_redis),
+) -> JSONResponse:
+    """
+    Checks the DB and Redis are actually reachable. 503 if either is down.
+
+    Goes through the same Depends(get_db) / Depends(get_redis) everything
+    else uses — not a raw db_engine.connect() — so it's exercising the
+    actual pooled clients the app serves requests with, not a side channel.
+    """
+    checks: dict[str, str] = {}
+
+    try:
+        db.execute(text("SELECT 1"))
+        checks["db"] = "ok"
+    except Exception as exc:  # noqa: BLE001 — a readiness check must never itself 500
+        checks["db"] = f"error: {exc}"
+
+    try:
+        redis_client.ping()
+        checks["redis"] = "ok"
+    except Exception as exc:  # noqa: BLE001
+        checks["redis"] = f"error: {exc}"
+
+    all_ok = all(v == "ok" for v in checks.values())
+    return JSONResponse(status_code=200 if all_ok else 503, content=checks)
 
 
 @app.get(
@@ -386,7 +420,7 @@ def predict(
         fair_odds_draw=_fair_odds(p_draw),
         fair_odds_away=_fair_odds(p_away),
         score_matrix=matrix.tolist(),
-        model_version="dixon-coles-v1",
+        model_version=MODEL_VERSION,
         features_applied=features_applied,
     )
 

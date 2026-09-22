@@ -1,8 +1,22 @@
 """SQLAlchemy ORM models — single source of truth for schema (Alembic + runtime)."""
 
+import uuid as uuid_pkg
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Boolean
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import CITEXT, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -116,7 +130,12 @@ class Prediction(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False, index=True
     )
-    
+
+    # Denormalized copies of Match.date / Match.sport_key — lets the "today's
+    # predictions" query hit a single index instead of joining matches.
+    kickoff: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    league: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
     # Model probabilities (0-1)
     home_prob: Mapped[float] = mapped_column(Float, nullable=False)
     draw_prob: Mapped[float] = mapped_column(Float, nullable=False)
@@ -157,6 +176,7 @@ class Prediction(Base):
     __table_args__ = (
         Index("ix_predictions_match_created", "match_id", "created_at"),
         Index("ix_predictions_result_settled", "result_settled"),
+        Index("ix_predictions_kickoff_league", "kickoff", "league"),
     )
 
 
@@ -272,7 +292,159 @@ class PlayerInjury(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
     )
-    
+
     __table_args__ = (
         Index("ix_player_injuries_team_status", "team_name", "status"),
     )
+
+
+# ============= MULTI-TENANT (B2B) SCHEMA =============
+#
+# organizations are the tenant. Every user belongs to exactly one org
+# (role is per-user within that org). API keys and usage events are
+# org-scoped, not user-scoped, so a whole org shares one quota/plan.
+#
+# `role` (per-user permissions) and `plan` (org billing tier) are deliberately
+# separate columns on separate tables — never combine them into one field.
+
+
+class Organization(Base):
+    """Tenant. Owns users, api keys, and usage events; billed on `plan`."""
+
+    __tablename__ = "organizations"
+
+    id: Mapped[uuid_pkg.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid_pkg.uuid4
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    plan: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="free", server_default="free"
+    )
+    plan_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    users: Mapped[list["User"]] = relationship(
+        "User", back_populates="organization", cascade="all, delete-orphan"
+    )
+    api_keys: Mapped[list["ApiKey"]] = relationship(
+        "ApiKey", back_populates="organization", cascade="all, delete-orphan"
+    )
+    usage_events: Mapped[list["UsageEvent"]] = relationship(
+        "UsageEvent", back_populates="organization", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        CheckConstraint("plan IN ('free', 'pro', 'premium')", name="ck_organizations_plan"),
+    )
+
+
+class User(Base):
+    """A person belonging to exactly one organization. `role` is per-user, not per-org."""
+
+    __tablename__ = "users"
+
+    id: Mapped[uuid_pkg.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid_pkg.uuid4
+    )
+    org_id: Mapped[uuid_pkg.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    email: Mapped[str] = mapped_column(CITEXT, nullable=False, unique=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="member", server_default="member"
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    organization: Mapped["Organization"] = relationship("Organization", back_populates="users")
+    refresh_tokens: Mapped[list["RefreshToken"]] = relationship(
+        "RefreshToken", back_populates="user", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        CheckConstraint("role IN ('owner', 'admin', 'member')", name="ck_users_role"),
+    )
+
+
+class ApiKey(Base):
+    """Org-scoped API key. Only the SHA-256 hash is ever stored — never the raw key."""
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[uuid_pkg.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid_pkg.uuid4
+    )
+    org_id: Mapped[uuid_pkg.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    prefix: Mapped[str] = mapped_column(String(12), nullable=False)
+    scopes: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    organization: Mapped["Organization"] = relationship("Organization", back_populates="api_keys")
+
+
+class RefreshToken(Base):
+    """User-scoped refresh token. Only the hash is stored; rotation tracked via `replaced_by`."""
+
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[uuid_pkg.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid_pkg.uuid4
+    )
+    user_id: Mapped[uuid_pkg.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    replaced_by: Mapped[uuid_pkg.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("refresh_tokens.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    user: Mapped["User"] = relationship("User", back_populates="refresh_tokens")
+
+
+class UsageEvent(Base):
+    """Append-only, org-scoped API usage log. High write volume — integer PK, not UUID."""
+
+    __tablename__ = "usage_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    org_id: Mapped[uuid_pkg.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    endpoint: Mapped[str] = mapped_column(String(255), nullable=False)
+    ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    organization: Mapped["Organization"] = relationship(
+        "Organization", back_populates="usage_events"
+    )
+
+    __table_args__ = (Index("ix_usage_events_org_ts", "org_id", "ts"),)

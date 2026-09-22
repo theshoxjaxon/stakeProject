@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from logging.config import fileConfig
-from pathlib import Path
 
 from sqlalchemy import engine_from_config, pool
 
@@ -20,16 +19,15 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
 
 def get_url() -> str:
-    """Prefer DATABASE_URL (e.g. CI); otherwise absolute sqlite path to data/betting.db."""
+    """Prefer the DATABASE_URL env var (e.g. CI); otherwise the app's configured default."""
     env_url = os.getenv("DATABASE_URL")
     if env_url:
         return env_url
-    db_path = PROJECT_ROOT / "data" / "betting.db"
-    return f"sqlite:///{db_path}"
+    from src.config import DATABASE_URL
+
+    return DATABASE_URL
 
 
 def run_migrations_offline() -> None:

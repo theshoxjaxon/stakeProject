@@ -87,12 +87,12 @@ def run_reports(
 
     btts_odds_by_match_id: optional map of match_id -> BTTS decimal odds for value check.
     """
-    from src.config import DATABASE_PATH
+    from src.config import DATABASE_URL
     from src.database import get_engine, init_db
     from src.predict import get_model_probabilities
 
-    init_db(DATABASE_PATH)
-    engine = get_engine(DATABASE_PATH)
+    init_db(DATABASE_URL)
+    engine = get_engine(DATABASE_URL)
     btts_odds_by_match_id = btts_odds_by_match_id or {}
 
     from sqlalchemy.orm import Session

@@ -3,7 +3,7 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from src.config import DATABASE_PATH
+from src.config import DATABASE_URL
 from src.database import get_engine, init_db
 from src.models import Match, Team
 from src.elo_model import init_ratings, update_ratings
@@ -37,8 +37,8 @@ def run_backfill_elo() -> int:
     Load completed matches, update Elo ratings in chronological order.
     Returns count of matches processed.
     """
-    init_db(DATABASE_PATH)
-    engine = get_engine(DATABASE_PATH)
+    init_db(DATABASE_URL)
+    engine = get_engine(DATABASE_URL)
 
     with Session(engine) as session:
         stmt = (

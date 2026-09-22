@@ -2,8 +2,8 @@
 
 import numpy as np
 from sqlalchemy.orm import Session
-from src.database import get_engine, init_db
-from src.models import Match, Prediction
+from src.database import get_engine
+from src.models import Base, Match, Prediction
 from src.ai_advisor import get_ai_betting_advice
 from datetime import datetime
 import uuid
@@ -22,8 +22,11 @@ def test_full_system():
     print("🚀 Starting Integration Test...")
     
     # 1. Initialize DB
+    # Scoped to Match + Prediction only: Base.metadata now also holds
+    # Postgres-only types (CITEXT, JSONB, UUID) on the multi-tenant tables,
+    # which SQLite can't render — this test only needs these two tables.
     engine = get_engine("sqlite:///:memory:")
-    init_db("sqlite:///:memory:")
+    Base.metadata.create_all(engine, tables=[Match.__table__, Prediction.__table__])
     
     with Session(engine) as session:
         # 2. Create a mock match

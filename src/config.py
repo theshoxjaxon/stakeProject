@@ -35,23 +35,26 @@ def _prediction_horizon_days() -> int | None:
     return max(1, int(raw))
 
 
-def _database_path() -> Path:
-    raw = os.getenv("DATABASE_URL", "").strip()
-    if not raw:
-        return DATA_DIR / "betting.db"
+_DEFAULT_DATABASE_URL = (
+    "postgresql+psycopg2://postgres:postgres@localhost:5432/stakeproject"
+)
+
+
+def _database_url() -> str:
+    raw = os.getenv("DATABASE_URL", "").strip() or _DEFAULT_DATABASE_URL
     from sqlalchemy.engine.url import make_url
 
     u = make_url(raw)
-    if u.drivername != "sqlite":
-        raise ValueError("Only sqlite DATABASE_URL is supported in this project.")
-    if not u.database:
-        return DATA_DIR / "betting.db"
-    p = Path(u.database)
-    return p if p.is_absolute() else (PROJECT_ROOT / p).resolve()
+    if u.get_backend_name() != "postgresql":
+        raise ValueError("Only postgresql DATABASE_URL is supported in this project.")
+    return raw
 
 
-DATABASE_PATH = _database_path()
+DATABASE_URL = _database_url()
 PREDICTION_HORIZON_DAYS = _prediction_horizon_days()
+
+# Redis (plan-check cache, daily rate limiting) — auxiliary, no fail-loud like JWT_SECRET.
+REDIS_URL = os.getenv("REDIS_URL", "").strip() or "redis://localhost:6379/0"
 
 # API (never commit real keys — use .env)
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "").strip()
