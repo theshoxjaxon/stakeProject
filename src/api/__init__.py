@@ -19,8 +19,6 @@ from src.api.routers import auth as auth_router
 from src.api.routers import org as org_router
 from src.api.routers import predictions as predictions_router
 from src.api.serializers import MODEL_VERSION
-from src.config import DATABASE_URL
-from src.database import get_engine, init_db
 from src.match_queries import (
     BetSortField,
     SortDir,
@@ -57,9 +55,15 @@ if DASHBOARD_ORIGIN == "*" or "," in DASHBOARD_ORIGIN:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialise database schema and fit the Dixon-Coles GoalEngine."""
-    init_db(DATABASE_URL)
-    db_engine = get_engine(DATABASE_URL)
+    """
+    Fit the Dixon-Coles GoalEngine at startup.
+
+    Does NOT create/migrate schema — that's alembic's job, run as an
+    explicit deploy step (`alembic upgrade head`) before the app starts.
+    Doing it here raced with multiple uvicorn workers, and Base.metadata's
+    create_all() doesn't know to CREATE EXTENSION citext first, so it fails
+    outright on a fresh DB that hasn't been migrated yet.
+    """
     goal_engine = GoalEngine()
 
     with Session(db_engine) as session:
